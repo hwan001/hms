@@ -1,7 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float, Text
-from sqlalchemy.ext.declarative import declarative_base
-
-Base = declarative_base()
+# database.py에서 정의한 Base를 임포트하여 통합 관리합니다.
+from database import Base 
 
 class SpendingHistory(Base):
     __tablename__ = "spending_history"

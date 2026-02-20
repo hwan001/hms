@@ -1,8 +1,7 @@
 
 from ui.common.config import ui_refs
 from domains.spending.service import SpendingService
-from database import engine, TABLE_NAME
-
+from database import db_session
 
 async def update_dashboard():
     # ui_refs에서 안전하게 값 추출
@@ -15,20 +14,32 @@ async def update_dashboard():
     target_col = ui_refs['search_column'].value 
     search_val = ui_refs['search_input'].value.strip() if ui_refs['search_input'].value else None
 
+    # limit은 서비스에서 기본값(20)이 있지만, 필요하다면 override. 
+    # 기존 코드에서는 limit=10000 으로 되어 있었으나, 
+    # service.py의 get_spending_list signature는 (db, category, start_date, end_date, page, size, search) 임.
+    # size=10000 으로 매핑해야 함.
+
     try:
-        # 서비스 호출 (TABLE_NAME 포함)
-        res = await SpendingService.get_spending_list(
-            engine,
-            TABLE_NAME,
-            start_date=s_date, 
-            end_date=e_date, 
-            # search=search_val if target_col == 'content' else None, # 선택한 컬럼에 따라 처리
-            limit=10000 
-        )
+        with db_session() as db:
+            # 서비스 호출
+            res = await SpendingService.get_spending_list(
+                db,
+                category=None, # 여기서 카테고리 필터링은 클라이언트단에서 하던가, 아니면 select box 값을 넘겨야 함. 
+                               # 기존 코드에는 category 인자가 없었음.
+                start_date=s_date, 
+                end_date=e_date, 
+                size=10000,
+                search=search_val if target_col in ['content', 'memo'] else None # search 인자는 content/memo 검색용
+            )
         data = res['data']
         
-        # 선택된 컬럼에 따른 클라이언트 필터링
+        # 선택된 컬럼에 따른 클라이언트 필터링 (서비스에서 search 로 커버 안되는 부분)
+        # 서비스의 search는 content, memo 에 대한 like 검색임.
+        # 기존 코드는 target_col이 무엇이든 search_val이 있으면 필터링을 시도했음.
+        
         if search_val:
+             # 서비스 search가 이미 적용되었을 수 있지만, 
+             # target_col이 category나 type인 경우 등 정밀 필터링을 위해 유지하거나 보완
             s_lower = search_val.lower()
             data = [r for r in data if s_lower in str(r.get(target_col, '')).lower()]
             

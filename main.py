@@ -4,14 +4,16 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
 from domains.spending.router import router as spending_router
-from database import init_db_from_schema
+from domains.inventory.router import router as inventory_router
+
+from database import init_db
 from common.config import CORS_ORIGINS
 
 ENV = os.getenv("APP_ENV", "development")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db_from_schema()
+    init_db()
     yield
 
 # 개발 환경일 때만 docs_url, redoc_url 활성화
@@ -42,7 +44,7 @@ app.add_middleware(
 
 # router
 app.include_router(spending_router, prefix="/api/v1")
-
+app.include_router(inventory_router, prefix="/api/v1")
 
 if __name__ == "__main__":
     import uvicorn

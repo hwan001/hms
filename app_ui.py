@@ -1,30 +1,50 @@
-from nicegui import ui
-from database import init_db_from_schema
 
-from ui.dashboard import render_dashboard
-from ui.list import render_list
+from nicegui import ui
+from database import init_db
+
+from ui.pages.budget import render_budget
+from ui.pages.list import render_list
+from ui.pages.inventory import render_inventory
+from ui.pages.cooking import render_cooking
+
 from ui.layout import shared_layout
 
 
-def base_page_config():
+def base_page_config(page_name: str):
     """모든 페이지에서 공통으로 호출할 레이아웃 및 스타일"""
-    shared_layout()
-
+    shared_layout(page_name)
+    
 @ui.page('/')
 async def index_page():
-    base_page_config()
-    await render_dashboard()
+    base_page_config("home")
 
-@ui.page('/list')
-async def list_page():
-    base_page_config()
-    await render_list()
+@ui.page('/budget')
+async def budget_page():
+    base_page_config("budget")
+    await render_budget()
+
+# 재고 관리
+@ui.page('/inventory')
+async def inventory_page():
+    base_page_config("inventory")
+    await render_inventory()
+
+# 요리
+@ui.page('/cooking')
+async def cooking_page():
+    base_page_config("cooking")
+    await render_cooking()
+
+# @ui.page('/list')
+# async def list_page():
+#     base_page_config("list")
+#     await render_list()
 
 if __name__ in {"__main__", "__mp_main__"}:
-    init_db_from_schema() 
+    init_db() 
     
     ui.run(
-        title='HAS Spending Tracker',
+        title='HMS',
         port=8080,
         reload=True,
         dark=False,

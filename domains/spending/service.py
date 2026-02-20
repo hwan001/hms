@@ -1,13 +1,10 @@
 import io
-# import re
-# import math
 import pandas as pd
-# import numpy as np
-# from typing import Optional, List, Dict, Any
-from sqlalchemy import text, bindparam
+from sqlalchemy.orm import Session
+from sqlalchemy import text, func, desc
 from fastapi import HTTPException
 from common.config import CSV_MAPPING, NUMERIC_COLUMNS
-
+from .models import SpendingHistory
 
 class SpendingService:
     @staticmethod
@@ -16,274 +13,227 @@ class SpendingService:
         if pd.isna(val) or str(val).strip() == '':
             return 0.0
         try:
-            # 콤마 제거 및 공백 정리
             return float(str(val).replace(',', '').strip())
         except ValueError:
             return 0.0
 
     @staticmethod
-    async def process_csv_upload(file, engine, table_name):
-        """중앙 설정을 참조한 CSV 업로드 로직"""
+    async def process_csv_upload(file, db: Session):
+        """ORM 기반 CSV 업로드 및 중복 방지 로직"""
         try:
             content = await file.read()
-            # BOM(utf-8-sig) 대응 및 모든 데이터를 일단 문자열로 로드
             df = pd.read_csv(io.StringIO(content.decode("utf-8-sig")), dtype=str)
             
-            # 1. 헤더 공백 정리 및 영문 매핑
             df.columns = [c.strip() for c in df.columns]
             df = df.rename(columns=CSV_MAPPING)
             
-            # 2. 유효한 영문 컬럼만 추출
             valid_cols = [c for c in CSV_MAPPING.values() if c in df.columns]
             df = df[valid_cols]
 
-            # 3. 숫자형 컬럼 변환
             for col in NUMERIC_COLUMNS:
                 if col in df.columns:
                     df[col] = df[col].apply(SpendingService.to_clean_float)
 
-            with engine.connect() as conn:
-                # 4. 중복 체크를 위한 기존 데이터 로드 (영문 컬럼 사용)
-                existing_query = text(f"SELECT date, content, outcome, income FROM {table_name}")
-                existing_rows = conn.execute(existing_query).fetchall()
-                
-                existing_set = set()
-                for r in existing_rows:
-                    # 중복 판별용 튜플 생성 (날짜, 내용, 지출, 수입)
-                    existing_set.add((str(r[0]), str(r[1]), int(r[2] or 0), int(r[3] or 0)))
+            # 중복 체크를 위해 기존 데이터 로드 (ORM 방식)
+            existing_data = db.query(
+                SpendingHistory.date, 
+                SpendingHistory.content, 
+                SpendingHistory.outcome, 
+                SpendingHistory.income
+            ).all()
+            
+            existing_set = {
+                (str(r.date), str(r.content), int(r.outcome or 0), int(r.income or 0)) 
+                for r in existing_data
+            }
 
-                new_records = []
-                duplicate_count = 0
+            new_records = []
+            duplicate_count = 0
+            
+            for _, row in df.iterrows():
+                current_key = (
+                    str(row.get('date', '')),
+                    str(row.get('content', '')),
+                    int(row.get('outcome', 0)),
+                    int(row.get('income', 0))
+                )
                 
-                for _, row in df.iterrows():
-                    # 현재 행의 중복 체크용 키
-                    current_key = (
-                        str(row.get('date', '')),
-                        str(row.get('content', '')),
-                        int(row.get('outcome', 0)),
-                        int(row.get('income', 0))
-                    )
+                if current_key not in existing_set:
+                    row_dict = row.to_dict()
+                    # 결측치(NaN) 처리
+                    for k, v in row_dict.items():
+                        if pd.isna(v): row_dict[k] = None
                     
-                    if current_key not in existing_set:
-                        # 메모 필드 결측치 처리
-                        row_dict = row.to_dict()
-                        if 'memo' in row_dict and pd.isna(row_dict['memo']):
-                            row_dict['memo'] = ""
-                        
-                        new_records.append(row_dict)
-                        existing_set.add(current_key)
-                    else:
-                        duplicate_count += 1
-
-                msg = ""
-                if new_records:
-                    new_df = pd.DataFrame(new_records)
-                    new_df.to_sql(table_name, con=engine, if_exists='append', index=False)
-                    msg = f"업로드 완료! (신규: {len(new_records)}건, 중복 제외: {duplicate_count}건)"
+                    new_records.append(SpendingHistory(**row_dict))
+                    existing_set.add(current_key)
                 else:
-                    msg = f"새로운 내역이 없습니다. (중복 제외: {duplicate_count}건)"
-                
-                conn.commit()
+                    duplicate_count += 1
+
+            if new_records:
+                db.add_all(new_records)
+                db.commit()
+                msg = f"업로드 완료! (신규: {len(new_records)}건, 중복 제외: {duplicate_count}건)"
+            else:
+                msg = f"새로운 내역이 없습니다. (중복 제외: {duplicate_count}건)"
+            
             return {"status": "success", "message": msg}
 
         except Exception as e:
+            db.rollback()
             raise HTTPException(status_code=500, detail=f"CSV 처리 오류: {str(e)}")
 
     @staticmethod
-    async def get_spending_list(engine, table_name, start_date=None, end_date=None, category=None, search=None, limit=50, offset=0):
-        """영문 컬럼명 기반 통합 검색 및 필터링"""
+    async def get_spending_list(db: Session, category=None, start_date=None, end_date=None, page=1, size=20, search=None):
+        """ORM 기반 필터링 및 페이징 조회"""
         try:
-            base_where = " WHERE 1=1"
-            params = {"limit": limit, "offset": offset}
+            query = db.query(SpendingHistory)
 
             if category and category != '전체':
-                base_where += " AND category = :category"
-                params["category"] = category
+                query = query.filter(SpendingHistory.category == category)
             if start_date:
-                base_where += " AND date >= :start_date"
-                params["start_date"] = start_date
+                query = query.filter(SpendingHistory.date >= start_date)
             if end_date:
-                base_where += " AND date <= :end_date"
-                params["end_date"] = f"{end_date} 23:59:59"
+                query = query.filter(SpendingHistory.date <= f"{end_date} 23:59:59")
             if search:
-                # 거래처(content)와 메모(memo) 동시 검색
-                base_where += " AND (content LIKE :search OR memo LIKE :search)"
-                params["search"] = f"%{search}%"
+                query = query.filter(
+                    (SpendingHistory.content.like(f"%{search}%")) | 
+                    (SpendingHistory.memo.like(f"%{search}%"))
+                )
 
-            with engine.connect() as conn:
-                # 데이터 쿼리
-                data_query = text(f"SELECT * FROM {table_name}{base_where} ORDER BY date DESC LIMIT :limit OFFSET :offset")
-                rows = conn.execute(data_query, params).fetchall()
-                data = [dict(row._mapping) for row in rows]
+            total_count = query.count()
+            
+            # 요약 통계 계산
+            summary_res = db.query(
+                func.sum(SpendingHistory.outcome).label("total_out"),
+                func.sum(SpendingHistory.income).label("total_in")
+            ).filter(query.whereclause).first()
 
-                # 요약 통계 쿼리 (REAL 타입이라 바로 SUM 가능)
-                sum_query = text(f"SELECT SUM(outcome), SUM(income), COUNT(*) FROM {table_name}{base_where}")
-                sum_res = conn.execute(sum_query, params).fetchone()
+            # 페이징 적용
+            offset = (page - 1) * size if size > 0 else 0
+            if size > 0:
+                rows = query.order_by(desc(SpendingHistory.date)).offset(offset).limit(size).all()
+            else:
+                rows = query.order_by(desc(SpendingHistory.date)).all()
+            
+            total_pages = (total_count + size - 1) // size if size > 0 else 1
 
             return {
                 "status": "success",
-                "count": sum_res[2] or 0,
+                "count": total_count,
                 "summary": {
-                    "total_withdrawal": float(sum_res[0] or 0.0),
-                    "total_deposit": float(sum_res[1] or 0.0)
+                    "total_withdrawal": float(summary_res.total_out or 0.0),
+                    "total_deposit": float(summary_res.total_in or 0.0),
+                    "net_amount": float((summary_res.total_in or 0.0) - (summary_res.total_out or 0.0))
                 },
-                "data": data
+                "pagination": {
+                    "total_count": total_count,
+                    "page": page,
+                    "size": size,
+                    "total_pages": total_pages
+                },
+                "filters": {"category": category, "start_date": start_date, "end_date": end_date},
+                "data": [dict(r.__dict__, **{"_sa_instance_state": None}) for r in rows]
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"조회 처리 오류: {str(e)}")
 
     @staticmethod
-    async def get_stats(engine, table_name):
-        """영문 컬럼 기반 통계 분석"""
+    async def get_stats(db: Session):
+        """ORM 기반 통계 분석"""
         try:
-            with engine.connect() as conn:
-                # 1. 월별 지출 추이
-                monthly_query = text(f"""
-                    SELECT strftime('%Y-%m', replace(date, '.', '-')) as month, SUM(outcome)
-                    FROM {table_name} WHERE outcome > 0
-                    GROUP BY month ORDER BY month DESC LIMIT 6
-                """)
-                monthly_res = conn.execute(monthly_query).fetchall()
-                
-                # 2. 카테고리별 비중
-                category_query = text(f"""
-                    SELECT category, SUM(outcome) as val FROM {table_name}
-                    WHERE outcome > 0 GROUP BY category ORDER BY val DESC LIMIT 10
-                """)
-                category_res = conn.execute(category_query).fetchall()
+            # 1. 월별 지출 추이
+            monthly_trend = db.query(
+                func.strftime('%Y-%m', func.replace(SpendingHistory.date, '.', '-')).label('month'),
+                func.sum(SpendingHistory.outcome).label('amount')
+            ).filter(SpendingHistory.outcome > 0).group_by('month').order_by(desc('month')).limit(6).all()
+            
+            # 2. 카테고리별 비중
+            category_dist = db.query(
+                SpendingHistory.category,
+                func.sum(SpendingHistory.outcome).label('val')
+            ).filter(SpendingHistory.outcome > 0).group_by(SpendingHistory.category).order_by(desc('val')).all()
 
-                # 3. 현재 잔액 (가장 최근 데이터의 balance)
-                balance_query = text(f"SELECT balance FROM {table_name} ORDER BY date DESC, id DESC LIMIT 1")
-                current_balance = conn.execute(balance_query).scalar() or 0.0
+            # 3. 현재 잔액 (가장 최근 데이터)
+            latest = db.query(SpendingHistory).order_by(desc(SpendingHistory.date), desc(SpendingHistory.id)).first()
+            current_balance = latest.balance if latest else 0.0
 
             return {
                 "status": "success",
                 "current_balance": current_balance,
-                "monthly_trend": [{"month": r[0], "amount": r[1] or 0} for r in reversed(monthly_res)],
-                "category_distribution": [{"name": r[0] or "미분류", "value": r[1] or 0} for r in category_res]
+                "monthly_trend": [{"month": r.month, "amount": r.amount or 0} for r in reversed(monthly_trend)],
+                "category_distribution": [{"name": r.category or "미분류", "value": r.val or 0} for r in category_dist]
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"통계 분석 오류: {str(e)}")
 
     @staticmethod
-    async def delete_spending(engine, table_name, record_id: int):
-        # rowid 대신 id 컬럼 사용
-        query = text(f"DELETE FROM {table_name} WHERE id = :record_id")
-        with engine.connect() as conn:
-            result = conn.execute(query, {"record_id": record_id})
-            conn.commit()
-            if result.rowcount == 0:
-                raise HTTPException(status_code=404, detail="삭제할 항목을 찾을 수 없습니다.")
+    async def update_spending(db: Session, record_id: int, update_data: dict):
+        """ORM 객체 수정을 통한 업데이트"""
+        record = db.query(SpendingHistory).filter(SpendingHistory.id == record_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다.")
+            
+        for key, value in update_data.items():
+            # Pydantic 필드명(한글)과 DB 필드명(영문) 매핑 대응이 필요할 수 있음
+            # 여기서는 전달된 dict 키가 이미 영문 컬럼명이라고 가정합니다.
+            if hasattr(record, key):
+                setattr(record, key, value)
+            
+        db.commit()
+        return {"status": "success", "message": f"ID {record_id} 항목 수정 완료"}
+
+    @staticmethod
+    async def delete_spending(db: Session, record_id: int):
+        """ORM 기반 삭제"""
+        record = db.query(SpendingHistory).filter(SpendingHistory.id == record_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="삭제할 항목을 찾을 수 없습니다.")
+        
+        db.delete(record)
+        db.commit()
         return {"status": "success", "message": f"ID {record_id} 항목 삭제 완료"}
 
     @staticmethod
-    async def update_spending(engine, table_name, record_id: int, update_data: dict):
-        if not update_data:
-            raise HTTPException(status_code=400, detail="수정할 데이터가 없습니다.")
-            
-        # 업데이트 쿼리 동적 생성
-        set_clause = ", ".join([f'"{key}" = :{key}' for key in update_data.keys()])
-        query = text(f"UPDATE {table_name} SET {set_clause} WHERE id = :record_id")
-        
-        # 파라미터 구성
-        params = {**update_data, "record_id": record_id}
-        
-        with engine.connect() as conn:
-            result = conn.execute(query, params)
-            conn.commit()
-            if result.rowcount == 0:
-                raise HTTPException(status_code=404, detail="수정할 항목을 찾을 수 없습니다.")
-        return {"status": "success", "message": f"ID {record_id} 항목 수정 완료"}
-    
-
-    @staticmethod
-    async def get_history(engine, table_name, start_date=None, end_date=None, category=None, search=None):
-        query = f"SELECT * FROM {table_name} WHERE 1=1"
-        params = {}
-        
-        if start_date:
-            query += " AND 일시 >= :start_date"
-            params['start_date'] = start_date
-        if end_date:
-            query += " AND 일시 <= :end_date"
-            params['end_date'] = end_date + " 23:59:59"
-        if category and category != '전체':
-            query += " AND 구분 = :category"
-            params['category'] = category
-        if search:
-            query += " AND \"보낸 사람/받는 사람\" LIKE :search"
-            params['search'] = f"%{search}%"
-            
-        query += " ORDER BY 일시 DESC"
-        
-        with engine.connect() as conn:
-            result = conn.execute(text(query), params).fetchall()
-            # 결과를 딕셔너리 리스트로 변환하여 반환
-            return [dict(row._mapping) for row in result]
-    
-    @staticmethod
-    async def get_combined_burn_rate_analysis(engine, table_name, categories: list, total_budget: float):
+    async def get_combined_burn_rate_analysis(db: Session, categories: list, total_budget: float):
+        """통합 소비 생존 시뮬레이션 로직"""
         try:
             if not categories:
                 return {"status": "no_data", "reason": "선택된 카테고리가 없습니다."}
 
-            # 1. SQL 쿼리 (기존 파라미터 바인딩 방식 유지)
-            placeholders = ", ".join([f":cat{i}" for i in range(len(categories))])
-            params = {f"cat{i}": cat for i, cat in enumerate(categories)}
-
-            query_str = f"""
-                SELECT date, outcome 
-                FROM {table_name} 
-                WHERE category IN ({placeholders}) AND outcome > 0
-            """
-            
-            query = text(query_str)
-            
-            with engine.connect() as conn:
-                result = conn.execute(query, params)
-                rows = result.fetchall()
+            rows = db.query(SpendingHistory.date, SpendingHistory.outcome)\
+                     .filter(SpendingHistory.category.in_(categories))\
+                     .filter(SpendingHistory.outcome > 0).all()
             
             if not rows:
                 return {"status": "no_data", "reason": "해당 카테고리의 지출 내역이 없습니다."}
 
-            # 2. 데이터 가공
             parsed_data = []
             for r in rows:
                 try:
-                    d_str = r[0].replace('.', '-')
-                    parsed_data.append({'date': pd.to_datetime(d_str), 'outcome': float(r[1])})
+                    d_str = r.date.replace('.', '-')
+                    parsed_data.append({'date': pd.to_datetime(d_str), 'outcome': float(r.outcome)})
                 except: continue
 
             df = pd.DataFrame(parsed_data)
-            
-            # [핵심 수정] 일평균 금액 계산
-            # 데이터가 있는 첫 날부터 마지막 날까지의 실제 기간 동안의 평균을 구합니다.
             start_date = df['date'].min()
             end_date = df['date'].max()
-            # 데이터가 단 하루치만 있을 경우를 대비해 최소 1일 보장
             actual_days = max(1, (end_date - start_date).days + 1)
             
-            # 해당 카테고리들의 총 지출액을 실제 경과 기간으로 나누어 일평균 도출
             category_total_spent = df['outcome'].sum()
             combined_avg_daily = category_total_spent / actual_days
 
-            # 3. [시뮬레이션 계산] 
-            # 사용자가 입력한 예산을 현재의 일평균 지출로 나눕니다.
-            # (과거에 이미 쓴 돈을 차감하지 않고, 새로 부여된 예산으로 시뮬레이션)
             if combined_avg_daily > 0:
                 days_left = int(total_budget / combined_avg_daily)
-                is_over = False # 시뮬레이션이므로 예산 입력 즉시 초과될 일은 없음
             else:
                 days_left = "∞"
-                is_over = False
 
             return {
                 "status": "success",
                 "combined_avg_daily": round(combined_avg_daily, 0),
                 "total_budget": total_budget,
                 "days_left": days_left,
-                "is_over_budget": is_over,
-                "progress": 0 # 시뮬레이션 모드이므로 게이지는 0부터 시작하거나 다른 용도로 활용
+                "is_over_budget": False,
+                "progress": 0
             }
         except Exception as e:
             return {"status": "error", "reason": str(e)}

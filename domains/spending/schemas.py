@@ -16,9 +16,8 @@ class SpendingCreate(SpendingBase):
 
 class SpendingRead(SpendingBase):
     id: int
-
-    class Config:
-        from_attributes = True # SQLAlchemy 객체를 Pydantic으로 자동 변환
+    # Pydantic v2의 표준 설정 방식입니다.
+    model_config = ConfigDict(from_attributes=True)
 
 class SpendingStats(BaseModel):
     current_balance: float
@@ -37,7 +36,6 @@ class PaginationInfo(BaseModel):
     total_pages: int
 
 class SpendingUpdate(BaseModel):
-    # V2 방식: json_schema_extra 사용
     구분: Optional[str] = Field(None, json_schema_extra={"example": "식비"})
     메모: Optional[str] = Field(None, json_schema_extra={"example": "자동입력"})
     출금: Optional[float] = Field(None, json_schema_extra={"example": 5500.0})

@@ -33,3 +33,9 @@ uv run python -m pytest
 ### Docs
 - http://127.0.0.1:8000/docs#/ (개발모드일 때만 작동)
      - 개발모드는 환경변수 기준으로 판단 `APP_ENV=development`
+
+### 기타
+```sh
+tree -fi 
+tree -fi ui -I __pycache__ -I __init__.py | grep -v "^$" | grep ".py" 
+```
