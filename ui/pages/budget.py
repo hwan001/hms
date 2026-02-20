@@ -15,7 +15,7 @@ async def render_simulator():
         ui.notify(f"데이터 로드 실패: {e}", color='red')
         return
 
-    ui.label('소비 생존 예측 시뮬레이션').classes('text-xl font-bold mt-4')
+    ui.label('소비 예측 시뮬레이션').classes('text-xl font-bold mt-4')
     
     with ui.card().classes('w-full bg-slate-50 p-6 shadow-none border border-slate-200'):
         with ui.row().classes('w-full items-center gap-4 mb-4'):
@@ -64,7 +64,7 @@ async def render_simulator():
                     if res['status'] == 'success':
                         with ui.card().classes('w-full p-6 bg-white border-2 border-indigo-100 shadow-md'):
                             with ui.row().classes('w-full justify-between items-center'):
-                                ui.label('생존 시뮬레이션 결과').classes('text-xl font-bold text-indigo-900')
+                                ui.label('시뮬레이션 결과').classes('text-xl font-bold text-indigo-900')
                                 ui.label(f"분석 대상: {', '.join(selected_items)}").classes('text-sm text-slate-400')
                             
                             ui.separator().classes('my-4')
@@ -101,7 +101,7 @@ async def render_budget():
             with ui.tabs().classes('w-full') as tabs:
                 stat_tab = ui.tab('상세 통계', icon='pie_chart')
                 list_tab = ui.tab('거래 내역 조회', icon='list')
-                simulator_tab = ui.tab('생존 시뮬레이터', icon='monitor')
+                simulator_tab = ui.tab('시뮬레이터', icon='monitor')
             
             # 2. 탭 패널 (컨텐츠 영역)
             with ui.tab_panels(tabs, value=list_tab).classes('w-full bg-transparent'):
@@ -116,7 +116,7 @@ async def render_budget():
                             ui.label('이번 주 지출 흐름').classes('text-sm text-slate-500')
 
                 with ui.tab_panel(simulator_tab):
-                    ui.label('생존 시뮬레이터').classes('text-lg font-bold mb-2')
+                    ui.label('시뮬레이터').classes('text-lg font-bold mb-2')
                     with ui.row().classes('w-full gap-4'):
                         with ui.card().classes('flex-1 p-4'):
                             await render_simulator()

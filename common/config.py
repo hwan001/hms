@@ -7,7 +7,7 @@ CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
 # spending
-CSV_MAPPING = {
+SPENDING_CSV_MAPPING = {
     '일시': 'date',
     '종류': 'type',
     '보낸 사람/받는 사람': 'content',

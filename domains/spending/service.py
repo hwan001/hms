@@ -3,7 +3,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import text, func, desc
 from fastapi import HTTPException
-from common.config import CSV_MAPPING, NUMERIC_COLUMNS
+from common.config import SPENDING_CSV_MAPPING, NUMERIC_COLUMNS
 from .models import SpendingHistory
 
 class SpendingService:
@@ -25,14 +25,19 @@ class SpendingService:
             df = pd.read_csv(io.StringIO(content.decode("utf-8-sig")), dtype=str)
             
             df.columns = [c.strip() for c in df.columns]
-            df = df.rename(columns=CSV_MAPPING)
+            df = df.rename(columns=SPENDING_CSV_MAPPING)
             
-            valid_cols = [c for c in CSV_MAPPING.values() if c in df.columns]
+            model_cols = {c.key for c in SpendingHistory.__table__.columns}
+            valid_cols = [c for c in SPENDING_CSV_MAPPING.values() if c in df.columns and c in model_cols]
             df = df[valid_cols]
 
             for col in NUMERIC_COLUMNS:
                 if col in df.columns:
                     df[col] = df[col].apply(SpendingService.to_clean_float)
+
+            # 카테고리 앞뒤 공백 제거
+            if 'category' in df.columns:
+                df['category'] = df['category'].str.strip()
 
             # 중복 체크를 위해 기존 데이터 로드 (ORM 방식)
             existing_data = db.query(
@@ -81,6 +86,80 @@ class SpendingService:
         except Exception as e:
             db.rollback()
             raise HTTPException(status_code=500, detail=f"CSV 처리 오류: {str(e)}")
+
+    @staticmethod
+    def import_csv_from_bytes(content: bytes, db: Session) -> dict:
+        """UI 직접 호출용 CSV import (bytes 입력, 동기)"""
+        try:
+            df = pd.read_csv(io.StringIO(content.decode("utf-8-sig")), dtype=str)
+            df.columns = [c.strip() for c in df.columns]
+            df = df.rename(columns=SPENDING_CSV_MAPPING)
+
+            model_cols = {c.key for c in SpendingHistory.__table__.columns}
+            valid_cols = [c for c in SPENDING_CSV_MAPPING.values() if c in df.columns and c in model_cols]
+            df = df[valid_cols]
+
+            for col in NUMERIC_COLUMNS:
+                if col in df.columns:
+                    df[col] = df[col].apply(SpendingService.to_clean_float)
+
+            if 'category' in df.columns:
+                df['category'] = df['category'].str.strip()
+
+            existing_data = db.query(
+                SpendingHistory.date,
+                SpendingHistory.content,
+                SpendingHistory.outcome,
+                SpendingHistory.income
+            ).all()
+            existing_set = {
+                (str(r.date), str(r.content), int(r.outcome or 0), int(r.income or 0))
+                for r in existing_data
+            }
+
+            new_records = []
+            duplicate_count = 0
+            for _, row in df.iterrows():
+                current_key = (
+                    str(row.get('date', '')),
+                    str(row.get('content', '')),
+                    int(row.get('outcome', 0)),
+                    int(row.get('income', 0))
+                )
+                if current_key not in existing_set:
+                    row_dict = row.to_dict()
+                    for k, v in row_dict.items():
+                        if pd.isna(v): row_dict[k] = None
+                    new_records.append(SpendingHistory(**row_dict))
+                    existing_set.add(current_key)
+                else:
+                    duplicate_count += 1
+
+            if new_records:
+                db.add_all(new_records)
+                db.commit()
+                return {"status": "success", "message": f"업로드 완료! (신규: {len(new_records)}건, 중복 제외: {duplicate_count}건)"}
+            else:
+                return {"status": "success", "message": f"새로운 내역이 없습니다. (중복 제외: {duplicate_count}건)"}
+        except Exception as e:
+            db.rollback()
+            raise RuntimeError(f"CSV 처리 오류: {str(e)}")
+
+    @staticmethod
+    def export_to_csv_bytes(db: Session) -> bytes:
+        """DB 전체 내역을 CSV bytes로 반환 (UI Export용)"""
+        rows = db.query(SpendingHistory).order_by(desc(SpendingHistory.date)).all()
+        # SPENDING_CSV_MAPPING을 역방향(영문→한글)으로 사용해 헤더 생성
+        reverse_map = {v: k for k, v in SPENDING_CSV_MAPPING.items()}
+        export_cols = [c for c in reverse_map if hasattr(SpendingHistory, c)]
+        data = [
+            {reverse_map[col]: getattr(r, col) for col in export_cols}
+            for r in rows
+        ]
+        df = pd.DataFrame(data)
+        buf = io.StringIO()
+        df.to_csv(buf, index=False, encoding='utf-8-sig')
+        return buf.getvalue().encode('utf-8-sig')
 
     @staticmethod
     async def get_spending_list(db: Session, category=None, start_date=None, end_date=None, page=1, size=20, search=None):

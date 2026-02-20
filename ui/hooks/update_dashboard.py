@@ -46,6 +46,24 @@ async def update_dashboard():
         # --- 테이블 갱신 ---
         ui_refs['table'].rows = data
 
+        # --- KPI 카드 갱신 ---
+        if data:
+            total_income = sum(float(r.get('income', 0) or 0) for r in data)
+            total_outcome = sum(float(r.get('outcome', 0) or 0) for r in data)
+            unique_categories = {r.get('category') for r in data if r.get('category')}
+
+            ui_refs['kpi_month_title'].set_text('지출 합계')
+            net = total_income - total_outcome
+            net_text = f'{int(net):,} 원 (입금 : {int(total_income):,}원, 출금 : {int(total_outcome):,}원)'
+            net_color = 'color: #dc2626' if net > 0 else 'color: #2563eb'  # red-600 / blue-600
+            ui_refs['kpi_month_amount'].set_text(net_text)
+            ui_refs['kpi_month_amount'].style(net_color)
+            ui_refs['kpi_category_count'].set_text(f'{len(unique_categories)} 개')
+        else:
+            ui_refs['kpi_month_title'].set_text('지출 합계')
+            ui_refs['kpi_month_amount'].set_text('0 원')
+            ui_refs['kpi_category_count'].set_text('0 개')
+
         # --- 그래프 갱신 로직 (추가) ---
         if data:
             # 1. 월별 지출 차트
@@ -59,6 +77,10 @@ async def update_dashboard():
             sorted_months = sorted(monthly_sums.keys())
             ui_refs['trend_chart'].options['xAxis']['data'] = sorted_months
             ui_refs['trend_chart'].options['series'][0]['data'] = [int(monthly_sums[m]) for m in sorted_months]
+            if int(total_income - total_outcome) > 0:
+                ui_refs['trend_chart'].options['series'][0]['itemStyle']['color'] = 'red'
+            else:
+                ui_refs['trend_chart'].options['series'][0]['itemStyle']['color'] = 'blue'
             ui_refs['trend_chart'].update()
 
             # 2. 잔액 흐름 차트
