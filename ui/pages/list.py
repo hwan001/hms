@@ -4,6 +4,7 @@ from ui.common.config import ui_refs
 
 from domains.spending.service import SpendingService
 from database import db_session
+from core.engine import engine
 
 async def render_list():    
     with ui.column().classes('w-full max-w-5xl mx-auto p-4'):
@@ -98,7 +99,7 @@ async def render_list():
             try:
                 content = await e.file.read()
                 with db_session() as db:
-                    result = SpendingService.import_csv_from_bytes(content, db)
+                    result = await engine.execute('spending', 'restore_csv', db, content=content)
                 ui.notify(result['message'], color='positive')
                 ui.timer(0.1, update_dashboard, once=True)
             except Exception as ex:
@@ -107,7 +108,7 @@ async def render_list():
         async def handle_export():
             try:
                 with db_session() as db:
-                    csv_bytes = SpendingService.export_to_csv_bytes(db)
+                    csv_bytes = await engine.export_csv('spending', db)
                 ui.download(csv_bytes, filename='spending_export.csv', media_type='text/csv')
                 ui.notify('Export 완료!', color='positive')
             except Exception as ex:
@@ -122,9 +123,9 @@ async def render_list():
 
             ui.button('CSV Import', icon='upload',
                       on_click=lambda: hidden_upload.run_method('pickFiles')) \
-                .props('flat dense color="green"').classes('shrink-0')
+                .props('elevated').classes('bg-indigo-600 text-white shrink-0')
 
             ui.button('CSV Export', icon='download', on_click=handle_export) \
-                .props('flat dense color="indigo"').classes('shrink-0')
+                .props('elevated').classes('bg-indigo-600 text-white shrink-0')
  
         ui.timer(0.2, update_dashboard, once=True)

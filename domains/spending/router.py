@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File, Query, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 from database import get_db
+from core.engine import engine
 from .service import SpendingService
 from .schemas import SpendingResponse, UploadResponse, SpendingUpdate
 
@@ -24,8 +25,9 @@ async def get_spending(
 async def upload_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="CSV 파일만 업로드 가능합니다.")
-    
-    return await SpendingService.process_csv_upload(file, db)
+
+    content = await file.read()
+    return await engine.execute("spending", "import_csv", db, content=content)
 
 @router.get("/stats", summary="지출 내역 통계 조회")
 async def get_spending_stats(db: Session = Depends(get_db)):
@@ -33,13 +35,9 @@ async def get_spending_stats(db: Session = Depends(get_db)):
 
 @router.patch("/{record_id}", summary="지출 내역 수정")
 async def update_spending(record_id: int, data: SpendingUpdate, db: Session = Depends(get_db)):
-    # Pydantic 모델의 한글 필드명을 영문 DB 필드명으로 매핑하여 전달
-    # schemas.py의 SpendingUpdate 구조에 맞춰 수동 매핑하거나 자동화 로직 필요
-    mapping = {"구분": "category", "메모": "memo", "출금": "outcome", "입금": "income", "일시": "date"}
-    update_dict = {mapping[k]: v for k, v in data.model_dump().items() if v is not None and k in mapping}
-    
-    return await SpendingService.update_spending(db, record_id, update_dict)
+    update_dict = data.model_dump(exclude_none=True)
+    return await engine.execute("spending", "update_spending", db, record_id=record_id, update_data=update_dict)
 
 @router.delete("/{record_id}", summary="지출 내역 삭제")
 async def delete_spending(record_id: int, db: Session = Depends(get_db)):
-    return await SpendingService.delete_spending(db, record_id)
+    return await engine.execute("spending", "delete_spending", db, record_id=record_id)

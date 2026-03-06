@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from domains.spending.router import router as spending_router
 from domains.inventory.router import router as inventory_router
+from domains.cooking.router import router as cooking_router
 
 from database import init_db
 from common.config import CORS_ORIGINS
@@ -45,6 +46,7 @@ app.add_middleware(
 # router
 app.include_router(spending_router, prefix="/api/v1")
 app.include_router(inventory_router, prefix="/api/v1")
+app.include_router(cooking_router, prefix="/api/v1")
 
 if __name__ == "__main__":
     import uvicorn

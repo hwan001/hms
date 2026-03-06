@@ -96,7 +96,18 @@ async def render_simulator():
 
 async def render_budget():
     with ui.column().classes('w-full max-w-6xl mx-auto p-4 gap-6'):
-        ui.label('대시보드').classes('text-2xl font-bold mb-2')
+        with ui.row().classes('w-full items-center gap-3 mb-2'):
+            ui.label('대시보드').classes('text-2xl font-bold')
+            try:
+                with db_session() as db:
+                    stats = await SpendingService.get_stats(db)
+                latest_date = stats.get('latest_date')
+                if latest_date:
+                    ui.label(f'최근 데이터: {latest_date}').classes(
+                        'text-sm text-slate-400 bg-slate-100 px-3 py-1 rounded-full'
+                    )
+            except Exception:
+                pass
         with ui.card().classes('w-full shadow-sm'):
             with ui.tabs().classes('w-full') as tabs:
                 stat_tab = ui.tab('상세 통계', icon='pie_chart')

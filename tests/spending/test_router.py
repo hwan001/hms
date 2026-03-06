@@ -29,4 +29,4 @@ def test_get_stats_structure():
     assert response.status_code == 200
     data = response.json()
     assert "monthly_trend" in data
-    assert "category_pie" in data
+    assert "category_distribution" in data

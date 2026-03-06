@@ -20,9 +20,10 @@ class SpendingService:
     @staticmethod
     async def process_csv_upload(file, db: Session):
         """ORM 기반 CSV 업로드 및 중복 방지 로직"""
+        from core.utils import decode_csv_bytes
         try:
             content = await file.read()
-            df = pd.read_csv(io.StringIO(content.decode("utf-8-sig")), dtype=str)
+            df = decode_csv_bytes(content)
             
             df.columns = [c.strip() for c in df.columns]
             df = df.rename(columns=SPENDING_CSV_MAPPING)
@@ -76,7 +77,7 @@ class SpendingService:
 
             if new_records:
                 db.add_all(new_records)
-                db.commit()
+                db.flush()
                 msg = f"업로드 완료! (신규: {len(new_records)}건, 중복 제외: {duplicate_count}건)"
             else:
                 msg = f"새로운 내역이 없습니다. (중복 제외: {duplicate_count}건)"
@@ -84,14 +85,14 @@ class SpendingService:
             return {"status": "success", "message": msg}
 
         except Exception as e:
-            db.rollback()
             raise HTTPException(status_code=500, detail=f"CSV 처리 오류: {str(e)}")
 
     @staticmethod
     def import_csv_from_bytes(content: bytes, db: Session) -> dict:
         """UI 직접 호출용 CSV import (bytes 입력, 동기)"""
+        from core.utils import decode_csv_bytes
         try:
-            df = pd.read_csv(io.StringIO(content.decode("utf-8-sig")), dtype=str)
+            df = decode_csv_bytes(content)
             df.columns = [c.strip() for c in df.columns]
             df = df.rename(columns=SPENDING_CSV_MAPPING)
 
@@ -137,12 +138,52 @@ class SpendingService:
 
             if new_records:
                 db.add_all(new_records)
-                db.commit()
+                db.flush()
                 return {"status": "success", "message": f"업로드 완료! (신규: {len(new_records)}건, 중복 제외: {duplicate_count}건)"}
             else:
                 return {"status": "success", "message": f"새로운 내역이 없습니다. (중복 제외: {duplicate_count}건)"}
         except Exception as e:
-            db.rollback()
+            raise RuntimeError(f"CSV 처리 오류: {str(e)}")
+
+    @staticmethod
+    def restore_from_csv_bytes(content: bytes, db: Session) -> dict:
+        """
+        [Restore] 지출 전체 복원.
+        기존 데이터 전체 삭제 후 CSV 재삽입 (ID는 auto-increment이므로 재생성).
+        """
+        from core.utils import decode_csv_bytes
+        try:
+            df = decode_csv_bytes(content)
+            df.columns = [c.strip() for c in df.columns]
+            df = df.rename(columns=SPENDING_CSV_MAPPING)
+
+            model_cols = {c.key for c in SpendingHistory.__table__.columns}
+            valid_cols = [c for c in SPENDING_CSV_MAPPING.values() if c in df.columns and c in model_cols]
+            df = df[valid_cols]
+
+            for col in NUMERIC_COLUMNS:
+                if col in df.columns:
+                    df[col] = df[col].apply(SpendingService.to_clean_float)
+            if 'category' in df.columns:
+                df['category'] = df['category'].str.strip()
+
+            records = []
+            for _, row in df.iterrows():
+                row_dict = row.to_dict()
+                for k, v in row_dict.items():
+                    if pd.isna(v):
+                        row_dict[k] = None
+                row_dict.pop('id', None)
+                records.append(row_dict)
+
+            from database import engine as sqla_engine
+            with sqla_engine.begin() as conn:
+                SpendingHistory.__table__.drop(conn, checkfirst=True)
+                SpendingHistory.__table__.create(conn, checkfirst=True)
+                if records:
+                    conn.execute(SpendingHistory.__table__.insert(), records)
+            return {"status": "success", "message": f"지출 복원 완료! ({len(records)}건)"}
+        except Exception as e:
             raise RuntimeError(f"CSV 처리 오류: {str(e)}")
 
     @staticmethod
@@ -239,6 +280,7 @@ class SpendingService:
             return {
                 "status": "success",
                 "current_balance": current_balance,
+                "latest_date": latest.date if latest else None,
                 "monthly_trend": [{"month": r.month, "amount": r.amount or 0} for r in reversed(monthly_trend)],
                 "category_distribution": [{"name": r.category or "미분류", "value": r.val or 0} for r in category_dist]
             }
@@ -258,7 +300,7 @@ class SpendingService:
             if hasattr(record, key):
                 setattr(record, key, value)
             
-        db.commit()
+        db.flush()
         return {"status": "success", "message": f"ID {record_id} 항목 수정 완료"}
 
     @staticmethod
@@ -269,7 +311,7 @@ class SpendingService:
             raise HTTPException(status_code=404, detail="삭제할 항목을 찾을 수 없습니다.")
         
         db.delete(record)
-        db.commit()
+        db.flush()
         return {"status": "success", "message": f"ID {record_id} 항목 삭제 완료"}
 
     @staticmethod

@@ -5,6 +5,7 @@ from domains.cooking.service import RecipeService
 from domains.cooking.schemas import RecipeCreate, RecipeIngredientCreate, RecipeUpdate
 from domains.inventory.service import InventoryService
 from database import db_session
+from core.engine import engine
 
 
 def _fmt_won(val: float | None) -> str:
@@ -108,7 +109,7 @@ async def render_cooking():
                             refresh_cart()
 
                         ui.button('재료 추가', icon='add', on_click=add_to_cart) \
-                            .props('elevated').classes('bg-green-600 text-white')
+                             .props('elevated').classes('bg-green-600 text-white')
 
                     ui.separator().classes('my-4')
                     ui.label('담은 재료').classes('text-base font-bold mb-2')
@@ -131,6 +132,89 @@ async def render_cooking():
 
                     refresh_cart()
 
+                    # ── 조리 단계 ────────────────────────────────────
+                    ui.separator().classes('my-4')
+                    with ui.row().classes('w-full items-center gap-2 mb-2'):
+                        ui.label('조리 단계').classes('text-base font-bold')
+                        ui.label('(선택)').classes('text-xs text-slate-400')
+
+                    steps: list[dict] = []
+                    steps_container = ui.column().classes('w-full gap-2')
+
+                    def refresh_steps():
+                        steps_container.clear()
+                        with steps_container:
+                            if not steps:
+                                ui.label('단계를 추가해주세요.').classes('text-slate-400 italic text-sm')
+                                return
+                            for idx, step in enumerate(steps):
+                                with ui.card().classes('w-full p-3 shadow-none border border-slate-200'):
+                                    with ui.row().classes('w-full items-center gap-2 mb-2'):
+                                        ui.badge(f'Step {idx + 1}').props('color=indigo')
+                                        step['title_el'].move(steps_container)  # 재사용 불가—아래에서 재생성
+                                        ui.space()
+                                        ui.button(icon='delete_outline', on_click=lambda _, i=idx: remove_step(i)).props('flat dense round color=red')
+
+                    def remove_step(idx: int):
+                        steps.pop(idx)
+                        # step_no 재부여
+                        for i, s in enumerate(steps):
+                            s['step_no'] = i + 1
+                        rebuild_steps()
+
+                    def rebuild_steps():
+                        steps_container.clear()
+                        with steps_container:
+                            if not steps:
+                                ui.label('단계를 추가해주세요.').classes('text-slate-400 italic text-sm')
+                                return
+                            for idx, step in enumerate(steps):
+                                with ui.card().classes('w-full p-3 shadow-none border border-slate-200'):
+                                    with ui.row().classes('w-full items-center gap-2 mb-2'):
+                                        ui.badge(f'Step {idx + 1}').props('color=indigo')
+                                        ui.space()
+                                        ui.button(
+                                            icon='delete_outline',
+                                            on_click=lambda _, i=idx: (steps.pop(i), rebuild_steps())
+                                        ).props('flat dense round color=red')
+                                    ui.input(label='단계 제목 (선택)', value=step.get('title', '')).props('outlined dense').classes('w-full mb-2') \
+                                        .bind_value(step, 'title')
+                                    ui.input(label='이 단계 재료 메모', value=step.get('ingredients_note', '')).props('outlined dense').classes('w-full mb-2') \
+                                        .bind_value(step, 'ingredients_note')
+                                    ui.textarea(label='조리 방법 설명', value=step.get('description', '')).props('outlined dense').classes('w-full') \
+                                        .bind_value(step, 'description')
+
+                    rebuild_steps()
+
+                    def add_step():
+                        steps.append({
+                            'step_no': len(steps) + 1,
+                            'title': '',
+                            'ingredients_note': '',
+                            'description': '',
+                        })
+                        rebuild_steps()
+
+                    ui.button('+ 단계 추가', icon='add', on_click=add_step) \
+                        .props('flat').classes('text-indigo-600 mt-1')
+
+                    # ── 결과물 ───────────────────────────────────────
+                    ui.separator().classes('my-4')
+                    with ui.row().classes('w-full items-center gap-2 mb-3'):
+                        ui.label('결과물').classes('text-base font-bold')
+                        ui.label('(선택)').classes('text-xs text-slate-400')
+
+                    with ui.row().classes('w-full items-end gap-3 flex-wrap'):
+                        output_name_input  = ui.input(label='결과물 이름').props('outlined dense').classes('flex-grow')
+                        output_amount_input = ui.number(label='수량/무게', value=None, min=0).props('outlined dense').classes('w-28')
+                        output_unit_select  = ui.select(
+                            options=['인분', 'g', 'ml', '개', '봉지'],
+                            value='인분', label='단위'
+                        ).props('outlined dense').classes('w-24')
+
+                    output_to_inv = ui.checkbox('재고에 추가하기').classes('mt-2 text-sm font-medium text-indigo-700')
+
+                    # ── 요리 완료 ─────────────────────────────────────
                     ui.separator().classes('my-4')
                     ui.label('요리 완료').classes('text-base font-bold mb-2')
 
@@ -152,20 +236,46 @@ async def render_cooking():
                                 amount_used=ing['amount'], unit=ing['unit'],
                             ) for ing in cart
                         ]
+                        from domains.cooking.schemas import RecipeStepCreate
+                        step_data = [
+                            RecipeStepCreate(
+                                step_no=s['step_no'],
+                                title=s.get('title') or None,
+                                description=s.get('description') or None,
+                                ingredients_note=s.get('ingredients_note') or None,
+                            ) for s in steps
+                        ]
                         try:
                             with db_session() as db:
-                                recipe = await RecipeService.create_recipe(db, RecipeCreate(
-                                    name=recipe_name_input.value,
-                                    servings=servings_input.value or 1,
-                                    note=recipe_note_input.value or None,
-                                    ingredients=ingredients,
-                                ))
-                            ui.notify(f'"{recipe.name}" 요리 완료! 레시피에 저장되었습니다.', color='positive')
+                                recipe = await engine.execute(
+                                    'cooking', 'create_recipe', db,
+                                    recipe_data=RecipeCreate(
+                                        name=recipe_name_input.value,
+                                        servings=servings_input.value or 1,
+                                        note=recipe_note_input.value or None,
+                                        ingredients=ingredients,
+                                        steps=step_data,
+                                        output_name=output_name_input.value or None,
+                                        output_amount=output_amount_input.value or None,
+                                        output_unit=output_unit_select.value or None,
+                                        output_to_inventory=output_to_inv.value,
+                                    )
+                                )
+                            msg = f'"{recipe_name_input.value}" 요리 완료! 레시피에 저장되었습니다.'
+                            if output_to_inv.value and output_name_input.value:
+                                msg += f' 결과물 "{output_name_input.value}" 재고 등록 완료!'
+                            ui.notify(msg, color='positive')
                             cart.clear()
+                            steps.clear()
                             recipe_name_input.value = ''
                             recipe_note_input.value = ''
                             servings_input.value = 1
+                            output_name_input.value = ''
+                            output_amount_input.value = None
+                            output_unit_select.value = '인분'
+                            output_to_inv.value = False
                             refresh_cart()
+                            rebuild_steps()
                             await load_inventory()
                             await refresh_recipes()
                         except Exception as e:
@@ -228,7 +338,10 @@ async def render_cooking():
                         with ui.row().classes('w-full justify-between items-center'):
                             async def on_dialog_delete():
                                 with db_session() as db:
-                                    await RecipeService.delete_recipe(db, detail_state['recipe_id'])
+                                    await engine.execute(
+                                        'cooking', 'delete_recipe', db,
+                                        recipe_id=detail_state['recipe_id']
+                                    )
                                 ui.notify('레시피 삭제됨', color='positive')
                                 detail_dialog.close()
                                 await refresh_recipes()
@@ -244,7 +357,10 @@ async def render_cooking():
                                     note=dlg_note.value or None,
                                 )
                                 with db_session() as db:
-                                    await RecipeService.update_recipe(db, detail_state['recipe_id'], upd)
+                                    await engine.execute(
+                                        'cooking', 'update_recipe', db,
+                                        recipe_id=detail_state['recipe_id'], update_data=upd
+                                    )
                                 ui.notify('저장되었습니다!', color='positive')
                                 detail_dialog.close()
                                 await refresh_recipes()
@@ -283,11 +399,35 @@ async def render_cooking():
                         detail_dialog.open()
 
                     # ─── 레시피 목록 ──────────────────────────────────
+                    async def handle_export():
+                        try:
+                            with db_session() as db:
+                                csv_bytes = await engine.export_csv('cooking', db)
+                            ui.download(csv_bytes, f"recipes.csv")
+                        except Exception as e:
+                            ui.notify(f"Export 실패: {e}", color='negative')
+                            
+                    async def handle_upload(e):
+                        try:
+                            content = await e.file.read()
+                            with db_session() as db:
+                                result = await engine.execute('cooking', 'restore_csv', db, content=content)
+                            ui.notify(result['message'], color='positive')
+                            await refresh_recipes()
+                        except Exception as ex:
+                            ui.notify(f"Import 실패: {ex}", color='negative')
+
                     with ui.row().classes('w-full items-center gap-3 pt-2 pb-4'):
                         rf_search = ui.input(placeholder='요리 이름 검색...').props('outlined dense').classes('flex-grow')
                         rf_search.on('keydown.enter', lambda: refresh_recipes())
                         ui.button('조회', icon='search', on_click=lambda: refresh_recipes()) \
                             .props('elevated').classes('bg-blue-600 text-white')
+                        ui.space()
+                        hidden_upload_rec = ui.upload(auto_upload=True, on_upload=handle_upload).props('accept=".csv"').style('display: none')
+                        ui.button('CSV Import', icon='upload', on_click=lambda: hidden_upload_rec.run_method('pickFiles')) \
+                            .props('elevated').classes('bg-indigo-600 text-white shrink-0')
+                        ui.button('CSV Export', icon='download', on_click=handle_export) \
+                            .props('elevated').classes('bg-indigo-600 text-white shrink-0')
 
                     recipe_container = ui.column().classes('w-full')
 

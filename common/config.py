@@ -1,10 +1,7 @@
-
-DATABASE_URL = "sqlite:///./spending_data.db"
-TABLE_NAME = "spending_history"
+DATABASE_URL = "sqlite:///./hms_data.db"
 
 # common
 CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
-
 
 # spending
 SPENDING_CSV_MAPPING = {

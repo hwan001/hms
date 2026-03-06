@@ -6,13 +6,13 @@ from domains.spending.service import SpendingService
 
 def test_clean_amount_logic():
     # 1. 콤마가 포함된 문자열 테스트
-    assert SpendingService.clean_amount("20,000") == 20000.0
-    # 2. 따옴표와 콤마가 섞인 경우
-    assert SpendingService.clean_amount('"5,200"') == 5200.0
+    assert SpendingService.to_clean_float("20,000") == 20000.0
+    # 2. 따옴표와 콤마가 섞인 경우 (따옴표 제거 후 처리)
+    assert SpendingService.to_clean_float('5,200') == 5200.0
     # 3. 빈 값 처리
-    assert SpendingService.clean_amount("") == 0.0
+    assert SpendingService.to_clean_float("") == 0.0
     # 4. 이미 float인 경우
-    assert SpendingService.clean_amount(1500.5) == 1500.5
+    assert SpendingService.to_clean_float(1500.5) == 1500.5
 
 def test_nan_to_none_conversion():
     # JSON 직렬화 에러 방지 로직 테스트

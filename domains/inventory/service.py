@@ -1,3 +1,4 @@
+import pandas as pd
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
 from .models import Inventory, InventoryHistory
@@ -8,10 +9,10 @@ class InventoryService:
     @staticmethod
     async def create_item(db: Session, item_data: InventoryCreate):
         """새로운 재고 품목 생성 + 등록 이력"""
-        # 품목번호 자동 생성 (INV-YYYY-MM-XXXXXXXX)
+        # 품목번호 자동 생성 (INV-YYYYMMDD-XXXXXXXX)
         from datetime import datetime as _dt
         now = _dt.now()
-        prefix = f"INV-{now.year}-{now.month:02d}-"
+        prefix = f"INV-{now.strftime('%Y%m%d')}-"
         # 전체 번호 중 max sequence 추출 (연/월 무관하게 글로벌 시퀀스 유지)
         last = db.query(Inventory.item_no).filter(
             Inventory.item_no.like('INV-%')
@@ -40,7 +41,7 @@ class InventoryService:
             usage_amount=0.0,
             note=note_val,
         ))
-        db.commit()
+        db.flush()
         db.refresh(db_item)
         return db_item
 
@@ -93,7 +94,7 @@ class InventoryService:
             usage_amount=0.0,
             note=note_val,
         ))
-        db.commit()
+        db.flush()
         db.refresh(item)
         return item
 
@@ -131,7 +132,7 @@ class InventoryService:
 
         # raw SQL DELETE → ORM 관계 추적 우회 (SET NULL 방지)
         db.execute(text("DELETE FROM inventory WHERE id = :id"), {"id": item_id})
-        db.commit()
+        db.flush()
         return True
 
     @staticmethod
@@ -179,9 +180,10 @@ class InventoryService:
             note=history_data.note,
         )
         db.add(new_history)
-        db.commit()
+        db.flush()
         db.refresh(new_history)
         return new_history
+
     @staticmethod
     async def finish_item(db: Session, item_id: str):
         """품목 완료 처리: 남은 무게를 전부 사용으로 기록 후 종료"""
@@ -202,5 +204,375 @@ class InventoryService:
             usage_amount=remaining,
             note=f"완료 처리 (잔량 {remaining:.0f}g 소진)",
         ))
-        db.commit()
+        db.flush()
         return item
+
+    @staticmethod
+    async def decrease_weight(db: Session, item_id: str, amount: float):
+        """소모품 무게 감소 (수동 입력)"""
+        item = db.query(Inventory).filter(Inventory.id == item_id).first()
+        if not item:
+            return None
+
+        item.current_weight = (item.current_weight or 0) - amount
+        db.add(InventoryHistory(
+            item_id=item_id,
+            event_type="사용",
+            item_name=item.name,
+            measured_weight=item.current_weight,
+            usage_amount=amount,
+            note=f"무게 감소: {amount:.0f}g",
+        ))
+        db.flush()
+        return item 
+
+    @staticmethod
+    async def upsert_stock(db: Session, item_id: str, amount: float):
+        """소모품 무게 추가 (수동 입력)"""
+        item = db.query(Inventory).filter(Inventory.id == item_id).first()
+        if not item:
+            return None
+
+        item.current_weight = (item.current_weight or 0) + amount
+        db.add(InventoryHistory(
+            item_id=item_id,
+            event_type="사용",
+            item_name=item.name,
+            measured_weight=item.current_weight,
+            usage_amount=amount,
+            note=f"무게 증가: {amount:.0f}g",
+        ))
+        db.flush()
+        return item
+
+    @staticmethod
+    def export_to_csv_bytes(db: Session) -> bytes:
+        """재고 전체(활성+완료)를 CSV bytes로 반환"""
+        import io
+        import pandas as pd
+        from sqlalchemy import desc
+
+        rows = db.query(Inventory).order_by(desc(Inventory.created_at)).all()
+        data = []
+        for r in rows:
+            data.append({
+                '품목ID':      r.id,
+                '품목번호':    r.item_no or '',
+                '분야':        r.domain,
+                '분류':        r.category,
+                '품목명':      r.name,
+                '수량':        r.quantity or '',
+                '전체무게(g)': r.start_weight or '',
+                '잔량(g)':     r.current_weight or '',
+                '구매가격(원)': r.price or '',
+                '메모':        r.memo or '',
+                '등록일':      r.started_at.strftime('%Y-%m-%d') if r.started_at else '',
+            })
+        df = pd.DataFrame(data)
+        buf = io.StringIO()
+        df.to_csv(buf, index=False, encoding='utf-8-sig')
+        return buf.getvalue().encode('utf-8-sig')
+
+    @staticmethod
+    def import_csv_from_bytes(content: bytes, db: Session) -> dict:
+        """CSV bytes로 재고 품목 일괄 등록 (품목번호는 자동 생성)"""
+        import pandas as pd
+        from core.utils import decode_csv_bytes
+
+        COL_MAP = {
+            '분야': 'domain', '분류': 'category', '품목명': 'name',
+            '수량': 'quantity', '전체무게(g)': 'start_weight',
+            '잔량(g)': 'current_weight', '구매가격(원)': 'price', '메모': 'memo',
+        }
+
+        try:
+            df = decode_csv_bytes(content)
+            df = df.rename(columns=COL_MAP)
+
+            required = {'domain', 'category', 'name'}
+            missing = required - set(df.columns)
+            if missing:
+                raise ValueError(f"필수 컬럼 누락: {missing}")
+
+            # 숫자 컬럼 변환
+            for col in ['quantity', 'start_weight', 'current_weight', 'price']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            from datetime import datetime as _dt
+            now = _dt.now()
+            prefix = f"INV-{now.strftime('%Y%m%d')}-"
+            last = db.query(Inventory.item_no).filter(
+                Inventory.item_no.like('INV-%')
+            ).order_by(Inventory.item_no.desc()).first()
+            seq = 1
+            if last and last[0]:
+                try:
+                    seq = int(last[0].split('-')[-1]) + 1
+                except (IndexError, ValueError):
+                    seq = 1
+
+            new_count = 0
+            for _, row in df.iterrows():
+                if not row.get('domain') or not row.get('category') or not row.get('name'):
+                    continue
+                item = Inventory(
+                    domain=str(row['domain']).strip(),
+                    category=str(row['category']).strip(),
+                    name=str(row['name']).strip(),
+                    quantity=int(row['quantity']) if pd.notna(row.get('quantity')) else None,
+                    start_weight=float(row['start_weight']) if pd.notna(row.get('start_weight')) else None,
+                    current_weight=float(row['current_weight']) if pd.notna(row.get('current_weight')) else None,
+                    price=float(row['price']) if pd.notna(row.get('price')) else None,
+                    memo=str(row['memo']).strip() if pd.notna(row.get('memo')) else None,
+                )
+                item.item_no = f"{prefix}{seq:08d}"
+                seq += 1
+                if item.current_weight is None and item.start_weight is not None and item.category == '소모품':
+                    item.current_weight = item.start_weight
+                db.add(item)
+                db.flush()
+                note = f"CSV 일괄 등록 ({item.start_weight:.0f}g)" if item.start_weight else "CSV 일괄 등록"
+                db.add(InventoryHistory(
+                    item_id=item.id, event_type="등록",
+                    item_name=item.name, measured_weight=item.start_weight,
+                    usage_amount=0.0, note=note,
+                ))
+                new_count += 1
+
+            db.flush()
+            return {"status": "success", "message": f"CSV 등록 완료! (신규: {new_count}건)"}
+        except Exception as e:
+            raise RuntimeError(f"CSV 처리 오류: {str(e)}")
+
+    @staticmethod
+    def export_history_to_csv_bytes(db: Session, item_id: str = None) -> bytes:
+        import io
+        import pandas as pd
+        from sqlalchemy import desc
+        
+        query = db.query(InventoryHistory).options(
+            __import__('sqlalchemy.orm', fromlist=['joinedload']).joinedload(InventoryHistory.item)
+        ).order_by(desc(InventoryHistory.action_date))
+        
+        if item_id:
+            query = query.filter(InventoryHistory.item_id == item_id)
+            
+        rows = query.all()
+        data = []
+        for r in rows:
+            data.append({
+                '이력ID': r.id,
+                '품목ID': r.item_id or '',
+                '품목명': r.item_name or (r.item.name if r.item else ''),
+                '발생일시': r.action_date.strftime('%Y-%m-%d %H:%M:%S') if r.action_date else '',
+                '이벤트유형': r.event_type,
+                '측정무게(g)': r.measured_weight if r.measured_weight is not None else '',
+                '사용량(g)': r.usage_amount if r.usage_amount is not None else '',
+                '메모': r.note or ''
+            })
+            
+        df = pd.DataFrame(data)
+        buf = io.StringIO()
+        df.to_csv(buf, index=False, encoding='utf-8-sig')
+        return buf.getvalue().encode('utf-8-sig')
+
+    @staticmethod
+    def import_history_from_csv_bytes(content: bytes, db: Session) -> dict:
+        import pandas as pd
+        from sqlalchemy.sql import func
+        from datetime import datetime
+        from core.utils import decode_csv_bytes
+        
+        COL_MAP = {
+            '이력ID': 'id', '품목ID': 'item_id', '품목명': 'item_name', 
+            '발생일시': 'action_date', '이벤트유형': 'event_type', 
+            '측정무게(g)': 'measured_weight', '사용량(g)': 'usage_amount', '메모': 'note'
+        }
+        
+        try:
+            df = decode_csv_bytes(content)
+            df = df.rename(columns=COL_MAP)
+            
+            required = {'item_id', 'event_type', 'note'}
+            missing = required - set(df.columns)
+            if missing:
+                raise ValueError(f"필수 컬럼 누락: {missing}")
+
+            for col in ['measured_weight', 'usage_amount']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            new_count = 0
+            for _, row in df.iterrows():
+                item_id = str(row.get('item_id', '')).strip()
+                event_type = str(row.get('event_type', '')).strip()
+                note = str(row.get('note', '')).strip()
+
+                if not item_id or item_id == 'nan' or not event_type or not note:
+                    continue
+
+                measured = float(row['measured_weight']) if pd.notna(row.get('measured_weight')) else None
+                usage = float(row['usage_amount']) if pd.notna(row.get('usage_amount')) else None
+
+                action_date = func.now()
+                if pd.notna(row.get('action_date')):
+                    try:
+                        action_date = datetime.strptime(str(row['action_date']), '%Y-%m-%d %H:%M:%S')
+                    except Exception:
+                        pass
+
+                history = InventoryHistory(
+                    item_id=item_id,
+                    event_type=event_type,
+                    item_name=str(row.get('item_name', '')).strip() if pd.notna(row.get('item_name')) else None,
+                    action_date=action_date,
+                    measured_weight=measured,
+                    usage_amount=usage,
+                    note=note
+                )
+
+                # 만약 제공된 id가 있다면 유지 (업데이트가 아니라 무조건 insert 처리이나, PK 충돌 방지 차원)
+                row_id = str(row.get('id', '')).strip()
+                if row_id and row_id != 'nan':
+                    # 이미 존재하는지 확인
+                    exists = db.query(InventoryHistory).filter(InventoryHistory.id == row_id).first()
+                    if exists:
+                        continue # 이미 있는 이력은 skip
+                    history.id = row_id
+                    
+                db.add(history)
+                new_count += 1
+                
+            db.flush()
+            return {"status": "success", "message": f"이력 CSV 등록 완료! (신규: {new_count}건)"}
+        except Exception as e:
+            raise RuntimeError(f"CSV 처리 오류: {str(e)}")
+
+    @staticmethod
+    def restore_from_csv_bytes(content: bytes, db: Session) -> dict:
+        """
+        [Restore] 재고 전체 복원.
+        기존 이력 → 기존 품목 순으로 삭제 후, 원래 ID 그대로 재삽입.
+        품목ID 컬럼이 없으면 일반 import 로 폴백.
+        """
+        import pandas as pd
+        from core.utils import decode_csv_bytes
+
+        COL_MAP = {
+            '품목ID': 'id', '품목번호': 'item_no',
+            '분야': 'domain', '분류': 'category', '품목명': 'name',
+            '수량': 'quantity', '전체무게(g)': 'start_weight',
+            '잔량(g)': 'current_weight', '구매가격(원)': 'price', '메모': 'memo',
+        }
+        try:
+            df = decode_csv_bytes(content)
+            df = df.rename(columns=COL_MAP)
+
+            required = {'domain', 'category', 'name'}
+            missing = required - set(df.columns)
+            if missing:
+                raise ValueError(f"필수 컬럼 누락: {missing}")
+
+            for col in ['quantity', 'start_weight', 'current_weight', 'price']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            import uuid as _uuid
+            has_id = 'id' in df.columns
+            records = []
+            for _, row in df.iterrows():
+                if not row.get('domain') or not row.get('name'):
+                    continue
+                row_id = str(row['id']).strip() if has_id and pd.notna(row.get('id')) else str(_uuid.uuid4())
+                records.append({
+                    'id': row_id,
+                    'item_no': str(row['item_no']).strip() if pd.notna(row.get('item_no')) and str(row['item_no']).strip() else None,
+                    'domain': str(row['domain']).strip(),
+                    'category': str(row['category']).strip(),
+                    'name': str(row['name']).strip(),
+                    'quantity': int(row['quantity']) if pd.notna(row.get('quantity')) else None,
+                    'start_weight': float(row['start_weight']) if pd.notna(row.get('start_weight')) else None,
+                    'current_weight': float(row['current_weight']) if pd.notna(row.get('current_weight')) else None,
+                    'price': float(row['price']) if pd.notna(row.get('price')) else None,
+                    'memo': str(row['memo']).strip() if pd.notna(row.get('memo')) else None,
+                })
+
+            from database import engine as sqla_engine
+            with sqla_engine.begin() as conn:
+                InventoryHistory.__table__.drop(conn, checkfirst=True)
+                Inventory.__table__.drop(conn, checkfirst=True)
+                Inventory.__table__.create(conn, checkfirst=True)
+                InventoryHistory.__table__.create(conn, checkfirst=True)
+                if records:
+                    conn.execute(Inventory.__table__.insert(), records)
+            return {"status": "success", "message": f"재고 복원 완료! ({len(records)}건)"}
+        except Exception as e:
+            raise RuntimeError(f"CSV 처리 오류: {str(e)}")
+
+    @staticmethod
+    def restore_history_from_csv_bytes(content: bytes, db: Session) -> dict:
+        """
+        [Restore] 이력 전체 복원.
+        기존 이력 전체 삭제 후 원래 ID·품목ID 그대로 재삽입.
+        """
+        import pandas as pd
+        from sqlalchemy.sql import func as sqlfunc
+        from datetime import datetime
+        from core.utils import decode_csv_bytes
+
+        COL_MAP = {
+            '이력ID': 'id', '품목ID': 'item_id', '품목명': 'item_name',
+            '발생일시': 'action_date', '이벤트유형': 'event_type',
+            '측정무게(g)': 'measured_weight', '사용량(g)': 'usage_amount', '메모': 'note',
+        }
+        try:
+            df = decode_csv_bytes(content)
+            df = df.rename(columns=COL_MAP)
+
+            required = {'item_id', 'event_type', 'note'}
+            missing = required - set(df.columns)
+            if missing:
+                raise ValueError(f"필수 컬럼 누락: {missing}")
+
+            for col in ['measured_weight', 'usage_amount']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            import uuid as _uuid
+            records = []
+            for _, row in df.iterrows():
+                item_id = str(row.get('item_id', '')).strip()
+                event_type = str(row.get('event_type', '')).strip()
+                note = str(row.get('note', '')).strip()
+                if not item_id or item_id == 'nan' or not event_type or not note:
+                    continue
+
+                action_date = None
+                if pd.notna(row.get('action_date')):
+                    try:
+                        action_date = datetime.strptime(str(row['action_date']), '%Y-%m-%d %H:%M:%S')
+                    except Exception:
+                        pass
+
+                row_id = str(row.get('id', '')).strip()
+                records.append({
+                    'id': row_id if row_id and row_id != 'nan' else str(_uuid.uuid4()),
+                    'item_id': item_id,
+                    'event_type': event_type,
+                    'item_name': str(row.get('item_name', '')).strip() if pd.notna(row.get('item_name')) else None,
+                    'action_date': action_date,
+                    'measured_weight': float(row['measured_weight']) if pd.notna(row.get('measured_weight')) else None,
+                    'usage_amount': float(row['usage_amount']) if pd.notna(row.get('usage_amount')) else None,
+                    'note': note,
+                })
+
+            from database import engine as sqla_engine
+            with sqla_engine.begin() as conn:
+                InventoryHistory.__table__.drop(conn, checkfirst=True)
+                InventoryHistory.__table__.create(conn, checkfirst=True)
+                if records:
+                    conn.execute(InventoryHistory.__table__.insert(), records)
+            return {"status": "success", "message": f"이력 복원 완료! ({len(records)}건)"}
+        except Exception as e:
+            raise RuntimeError(f"CSV 처리 오류: {str(e)}")

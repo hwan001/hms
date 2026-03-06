@@ -36,11 +36,11 @@ class PaginationInfo(BaseModel):
     total_pages: int
 
 class SpendingUpdate(BaseModel):
-    구분: Optional[str] = Field(None, json_schema_extra={"example": "식비"})
-    메모: Optional[str] = Field(None, json_schema_extra={"example": "자동입력"})
-    출금: Optional[float] = Field(None, json_schema_extra={"example": 5500.0})
-    입금: Optional[float] = Field(None, json_schema_extra={"example": 0.0})
-    일시: Optional[str] = Field(None, json_schema_extra={"example": "2026-02-19 12:00:00"})
+    category: Optional[str] = Field(None, json_schema_extra={"example": "식비"})
+    memo: Optional[str] = Field(None, json_schema_extra={"example": "자동입력"})
+    outcome: Optional[float] = Field(None, json_schema_extra={"example": 5500.0})
+    income: Optional[float] = Field(None, json_schema_extra={"example": 0.0})
+    date: Optional[str] = Field(None, json_schema_extra={"example": "2026-02-19 12:00:00"})
 
 class SpendingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

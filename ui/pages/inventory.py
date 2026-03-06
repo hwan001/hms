@@ -4,6 +4,7 @@ from datetime import datetime
 from domains.inventory.service import InventoryService
 from domains.inventory.schemas import InventoryCreate, InventoryUpdate, HistoryCreate
 from database import db_session
+from core.engine import engine
 
 EVENT_COLORS = {'등록': 'indigo', '사용': 'green', '수정': 'orange', '삭제': 'red', '완료': 'teal'}
 
@@ -54,9 +55,10 @@ async def render_inventory():
                         return
                     try:
                         with db_session() as db:
-                            result = await InventoryService.add_usage_history(
-                                db, history_state['item_id'],
-                                HistoryCreate(measured_weight=dlg_weight.value, note=dlg_note.value or '사용')
+                            result = await engine.execute(
+                                'inventory', 'add_usage_history', db,
+                                item_id=history_state['item_id'],
+                                history_data=HistoryCreate(measured_weight=dlg_weight.value, note=dlg_note.value or '사용')
                             )
                         if result:
                             used = history_state['current_weight'] - dlg_weight.value
@@ -105,7 +107,10 @@ async def render_inventory():
                             memo=edit_memo.value or None,
                         )
                         with db_session() as db:
-                            result = await InventoryService.update_item(db, edit_state['item_id'], update_data)
+                            result = await engine.execute(
+                                'inventory', 'update_item', db,
+                                item_id=edit_state['item_id'], update_data=update_data
+                            )
                         if result:
                             ui.notify('수정되었습니다!', color='positive')
                             edit_dialog.close()
@@ -142,7 +147,10 @@ async def render_inventory():
                 async def on_delete_confirm():
                     try:
                         with db_session() as db:
-                            ok = await InventoryService.delete_item(db, delete_state['item_id'])
+                            ok = await engine.execute(
+                                'inventory', 'delete_item', db,
+                                item_id=delete_state['item_id']
+                            )
                         if ok:
                             ui.notify(f"'{delete_state['item_name']}' 삭제 완료", color='positive')
                             delete_dialog.close()
@@ -176,7 +184,10 @@ async def render_inventory():
                 async def on_finish_confirm():
                     try:
                         with db_session() as db:
-                            ok = await InventoryService.finish_item(db, finish_state['item_id'])
+                            ok = await engine.execute(
+                                'inventory', 'finish_item', db,
+                                item_id=finish_state['item_id']
+                            )
                         if ok:
                             ui.notify(f"'{finish_state['item_name']}' 완료 처리됨", color='positive')
                             finish_dialog.close()
@@ -232,14 +243,17 @@ async def render_inventory():
                     total_weight = (qty * uw) if uw else None
                     try:
                         with db_session() as db:
-                            await InventoryService.create_item(db, InventoryCreate(
-                                domain=add_domain.value, category=add_category.value,
-                                name=add_name.value,
-                                quantity=qty,
-                                start_weight=total_weight,
-                                price=add_price.value,
-                                memo=add_memo.value
-                            ))
+                            await engine.execute(
+                                'inventory', 'create_item', db,
+                                item_data=InventoryCreate(
+                                    domain=add_domain.value, category=add_category.value,
+                                    name=add_name.value,
+                                    quantity=qty,
+                                    start_weight=total_weight,
+                                    price=add_price.value,
+                                    memo=add_memo.value
+                                )
+                            )
                         ui.notify('품목이 등록되었습니다!', color='positive')
                         add_dialog.close()
                         for cb in refresh_callbacks.values():
@@ -262,11 +276,34 @@ async def render_inventory():
                 # ─── 탭 1: 재고 현황 ──────────────────────────────────
                 with ui.tab_panel(stock_tab):
 
+                    async def handle_export():
+                        try:
+                            with db_session() as db:
+                                csv_bytes = await engine.export_csv('inventory', db)
+                            ui.download(csv_bytes, f"inventory.csv")
+                        except Exception as e:
+                            ui.notify(f"Export 실패: {e}", color='negative')
+                            
+                    async def handle_upload(e):
+                        try:
+                            content = await e.file.read()
+                            with db_session() as db:
+                                result = await engine.execute('inventory', 'restore_csv', db, content=content)
+                            ui.notify(result['message'], color='positive')
+                            await refresh_stock()
+                        except Exception as ex:
+                            ui.notify(f"Import 실패: {ex}", color='negative')
+
                     with ui.row().classes('w-full items-center gap-3 pt-2 pb-4'):
                         sf_domain   = ui.select(['전체','탈것','위생','요리','전자장비','공구','기타'], value='전체', label='분야').props('outlined dense').classes('w-36')
                         sf_category = ui.select(['전체','도구','소모품','전자장비','기타'], value='전체', label='분류').props('outlined dense').classes('w-36')
                         ui.button('조회', icon='search', on_click=lambda: refresh_stock()).props('elevated').classes('bg-blue-600 text-white')
                         ui.space()
+                        hidden_upload_inv = ui.upload(auto_upload=True, on_upload=handle_upload).props('accept=".csv"').style('display: none')
+                        ui.button('CSV Import', icon='upload', on_click=lambda: hidden_upload_inv.run_method('pickFiles')) \
+                            .props('elevated').classes('bg-indigo-600 text-white shrink-0')
+                        ui.button('CSV Export', icon='download', on_click=handle_export) \
+                            .props('elevated').classes('bg-indigo-600 text-white shrink-0')
                         ui.button('품목 등록', icon='add', on_click=add_dialog.open).props('elevated').classes('bg-indigo-600 text-white')
 
                     stock_container = ui.column().classes('w-full')
@@ -448,8 +485,42 @@ async def render_inventory():
                             chk_del  = ui.checkbox('삭제', value=True)
                         ui.button('조회', icon='search', on_click=lambda: refresh_history()) \
                             .props('elevated').classes('bg-blue-600 text-white')
+                        ui.space()
+                        hidden_upload_hist = ui.upload(auto_upload=True, on_upload=lambda e: handle_upload_history(e)).props('accept=".csv"').style('display: none')
+                        ui.button('CSV Import', icon='upload', on_click=lambda: hidden_upload_hist.run_method('pickFiles')) \
+                            .props('elevated').classes('bg-indigo-600 text-white shrink-0')
+                        ui.button('CSV Export', icon='download', on_click=lambda: handle_export_history()) \
+                            .props('elevated').classes('bg-indigo-600 text-white shrink-0')
 
                     ui.timer(0.1, _load_item_options, once=True)
+
+                    async def handle_export_history():
+                        try:
+                            item_id_filter = None
+                            item_no_val = hf_item_no.value.strip().upper() if hf_item_no.value else None
+                            if item_no_val:
+                                by_no = item_options_state.get('by_no', {})
+                                item_id_filter = by_no.get(item_no_val)
+                                if not item_id_filter:
+                                    for no, uid in by_no.items():
+                                        if no.startswith(item_no_val):
+                                            item_id_filter = uid
+                                            break
+                            with db_session() as db:
+                                csv_bytes = await engine.execute('inventory', 'export_history_csv', db, item_id=item_id_filter)
+                            ui.download(csv_bytes, f"inventory_history.csv")
+                        except Exception as e:
+                            ui.notify(f"Export 실패: {e}", color='negative')
+
+                    async def handle_upload_history(e):
+                        try:
+                            content = await e.file.read()
+                            with db_session() as db:
+                                result = await engine.execute('inventory', 'restore_history_csv', db, content=content)
+                            ui.notify(result.get('message', 'Import 성공'), color='positive')
+                            await refresh_history()
+                        except Exception as ex:
+                            ui.notify(f"Import 실패: {ex}", color='negative')
 
                     async def refresh_history():
                         raw_start = hf_start.value

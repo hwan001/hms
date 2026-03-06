@@ -2,6 +2,7 @@
 from nicegui import ui
 from database import init_db
 
+from ui.pages.home import render_home
 from ui.pages.budget import render_budget
 from ui.pages.list import render_list
 from ui.pages.inventory import render_inventory
@@ -17,6 +18,7 @@ def base_page_config(page_name: str):
 @ui.page('/')
 async def index_page():
     base_page_config("home")
+    await render_home()
 
 @ui.page('/budget')
 async def budget_page():
