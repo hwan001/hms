@@ -10,6 +10,7 @@ class InventoryBase(BaseModel):
     quantity: Optional[int] = None         # 구매 수량
     start_weight: Optional[float] = None
     price: Optional[float] = None          # 구매 가격 (원)
+    image_url: Optional[str] = None
     extra_info: Optional[Dict[str, Any]] = None
     memo: Optional[str] = None
 
@@ -23,6 +24,7 @@ class InventoryUpdate(BaseModel):
     quantity: Optional[int] = None
     current_weight: Optional[float] = None
     price: Optional[float] = None
+    image_url: Optional[str] = None
     extra_info: Optional[Dict[str, Any]] = None
     memo: Optional[str] = None
     ended_at: Optional[datetime] = None

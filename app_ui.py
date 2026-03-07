@@ -7,6 +7,7 @@ from ui.pages.budget import render_budget
 from ui.pages.list import render_list
 from ui.pages.inventory import render_inventory
 from ui.pages.cooking import render_cooking
+from ui.pages.finance import render_finance
 
 from ui.layout import shared_layout
 
@@ -36,6 +37,12 @@ async def inventory_page():
 async def cooking_page():
     base_page_config("cooking")
     await render_cooking()
+
+# 금융
+@ui.page('/finance')
+async def finance_page():
+    base_page_config("finance")
+    await render_finance()
 
 # @ui.page('/list')
 # async def list_page():

@@ -26,6 +26,7 @@ Usage:
 from core.handlers.inventory import InventoryHandler
 from core.handlers.spending import SpendingHandler
 from core.handlers.cooking import CookingHandler
+from core.handlers.finance import FinanceHandler
 
 
 class HMSEngine:
@@ -43,6 +44,7 @@ class HMSEngine:
         self.register("inventory", InventoryHandler())
         self.register("spending", SpendingHandler())
         self.register("cooking", CookingHandler())
+        self.register("finance", FinanceHandler())
 
     def register(self, domain: str, handler) -> None:
         """도메인 핸들러를 등록합니다. 동일 domain 재등록 시 덮어씁니다."""
@@ -194,6 +196,23 @@ class HMSEngine:
             return {"status": "success", "results": results}
         except Exception as e:
             raise RuntimeError(f"전체 Import 오류: {str(e)}") from e
+
+
+    async def clear_all(self) -> dict:
+        """
+        모든 도메인 데이터 초기화.
+        Base에 등록된 모든 테이블을 DROP 후 재생성합니다.
+        """
+        from database import engine as sqla_engine, Base
+        import domains.inventory.models  # noqa
+        import domains.cooking.models    # noqa
+        import domains.spending.models   # noqa
+        import domains.finance.models    # noqa
+
+        with sqla_engine.begin() as conn:
+            Base.metadata.drop_all(bind=conn)
+            Base.metadata.create_all(bind=conn)
+        return {"status": "success", "message": "전체 데이터 초기화 완료"}
 
 
 # 전역 싱글톤 — import 후 바로 사용 가능

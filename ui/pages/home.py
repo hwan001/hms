@@ -35,8 +35,14 @@ async def render_home():
             await _cooking_summary()
 
         # ── 데이터 관리 ───────────────────────────────────────────────
-        ui.label('데이터 관리').classes('text-xl font-bold')
-        await _data_management_panel()
+        with ui.expansion('데이터 관리', icon='storage') \
+                .classes('w-full text-xl font-bold border rounded-lg shadow-sm'):
+            await _data_management_panel()
+
+        # ── 위험 구역 ─────────────────────────────────────────────────
+        with ui.expansion('위험 구역', icon='warning') \
+                .classes('w-full text-xl font-bold border border-red-200 rounded-lg shadow-sm text-red-600'):
+            await _danger_zone_panel()
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────────
@@ -174,33 +180,34 @@ async def _data_management_panel():
             ui.icon('table_chart').classes('text-xl text-slate-600')
             ui.label('도메인별 CSV').classes('font-bold text-base')
 
+
         domain_configs = [
             {
                 'label':   '가계부',
                 'icon':    'payments',
                 'color':   'green',
-                'exports': [('spending',  'export_csv',          'spending.csv')],
-                'imports': [('spending',  'restore_csv',         'spending.csv',          '.csv')],
+                'exports': [('spending', 'export_csv', '')], # ''은 버튼에 표시할 파일명
+                'imports': [('spending', 'restore_csv', '', '.csv')],
             },
             {
                 'label':   '재고 관리',
                 'icon':    'inventory',
                 'color':   'indigo',
                 'exports': [
-                    ('inventory', 'export_csv',          'inventory.csv'),
-                    ('inventory', 'export_history_csv',  'inventory_history.csv'),
+                    ('inventory', 'export_csv', ''),
+                    ('inventory', 'export_history_csv',  '(history.csv)'),
                 ],
                 'imports': [
-                    ('inventory', 'restore_csv',         'inventory.csv',         '.csv'),
-                    ('inventory', 'restore_history_csv', 'inventory_history.csv', '.csv'),
+                    ('inventory', 'restore_csv', '', '.csv'),
+                    ('inventory', 'restore_history_csv', '(history.csv)', '.csv'),
                 ],
             },
             {
                 'label':   '요리',
                 'icon':    'restaurant',
                 'color':   'orange',
-                'exports': [('cooking',  'export_csv',          'recipes.csv')],
-                'imports': [('cooking',  'restore_csv',         'recipes.csv',           '.csv')],
+                'exports': [('cooking',  'export_csv', '')],
+                'imports': [('cooking',  'restore_csv', '', '.csv')],
             },
         ]
 
@@ -253,3 +260,33 @@ async def _data_management_panel():
                         ui.button(f'Import {filename}', icon='upload',
                                   on_click=lambda _, h=hidden: h.run_method('pickFiles')) \
                             .props('outlined').classes(f'text-{cfg["color"]}-700')
+
+
+async def _danger_zone_panel():
+    """모든 데이터 초기화 패널"""
+    with ui.card().classes('w-full p-5 shadow-sm border border-red-200 bg-red-50'):
+        ui.label('모든 도메인(가계부·재고·요리)의 데이터를 완전히 삭제합니다. 이 작업은 되돌릴 수 없습니다.') \
+            .classes('text-xs text-red-400 mb-4')
+
+        async def _do_clear():
+            try:
+                await engine.clear_all()
+                ui.notify('전체 데이터가 초기화되었습니다.', color='positive')
+            except Exception as ex:
+                ui.notify(f'초기화 실패: {ex}', color='negative')
+
+        async def _confirm_clear():
+            with ui.dialog() as dlg, ui.card().classes('p-6 gap-4'):
+                ui.label('정말로 모든 데이터를 삭제하시겠습니까?').classes('font-bold text-red-700')
+                ui.label('가계부, 재고, 요리 데이터가 모두 사라집니다.').classes('text-sm text-slate-500')
+                with ui.row().classes('gap-3 mt-2'):
+                    ui.button('취소', on_click=dlg.close).props('outlined')
+                    async def _confirmed():
+                        dlg.close()
+                        await _do_clear()
+                    ui.button('전체 삭제', icon='delete_forever', on_click=_confirmed) \
+                        .classes('bg-red-600 text-white')
+            dlg.open()
+
+        ui.button('전체 데이터 초기화', icon='delete_forever', on_click=_confirm_clear) \
+            .props('elevated').classes('bg-red-600 text-white')

@@ -20,6 +20,7 @@ class Inventory(Base):
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     ended_at = Column(DateTime(timezone=True), nullable=True)
 
+    image_url = Column(String, nullable=True)   # 이미지 URL
     extra_info = Column(JSON, nullable=True)
     memo = Column(Text, nullable=True)
     price = Column(Float, nullable=True)   # 구매 가격 (원)
@@ -38,6 +39,7 @@ class InventoryHistory(Base):
     # nullable=True + ondelete="SET NULL" → 품목 삭제 후에도 이력 보존
     item_id = Column(String, ForeignKey("inventory.id", ondelete="SET NULL"), nullable=True)
     event_type = Column(String, nullable=False, default="사용")  # 등록/사용/수정/삭제
+    item_no = Column(String, nullable=True)     # 품목번호 보존용 (품목 삭제 후에도 유지)
     item_name = Column(String, nullable=True)   # 삭제된 품목명 보존용
     action_date = Column(DateTime(timezone=True), server_default=func.now())
     measured_weight = Column(Float, nullable=True)

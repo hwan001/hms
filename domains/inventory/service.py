@@ -36,6 +36,7 @@ class InventoryService:
         db.add(InventoryHistory(
             item_id=db_item.id,
             event_type="등록",
+            item_no=db_item.item_no,
             item_name=db_item.name,
             measured_weight=db_item.start_weight,
             usage_amount=0.0,
@@ -89,6 +90,7 @@ class InventoryService:
         db.add(InventoryHistory(
             item_id=item_id,
             event_type="수정",
+            item_no=item.item_no,
             item_name=item.name,
             measured_weight=item.current_weight,
             usage_amount=0.0,
@@ -120,9 +122,11 @@ class InventoryService:
         )
 
         # 삭제 이력 기록 (삭제 전, item_id 실제 값)
+        item_no_val = item.item_no
         db.add(InventoryHistory(
             item_id=item_id,
             event_type="삭제",
+            item_no=item_no_val,
             item_name=item_name,
             measured_weight=item_cw,
             usage_amount=0.0,
@@ -174,6 +178,7 @@ class InventoryService:
         new_history = InventoryHistory(
             item_id=item_id,
             event_type="사용",
+            item_no=item.item_no,
             item_name=item.name,
             measured_weight=history_data.measured_weight,
             usage_amount=usage,
@@ -199,6 +204,7 @@ class InventoryService:
         db.add(InventoryHistory(
             item_id=item_id,
             event_type="완료",
+            item_no=item.item_no,
             item_name=item.name,
             measured_weight=0.0,
             usage_amount=remaining,
@@ -218,6 +224,7 @@ class InventoryService:
         db.add(InventoryHistory(
             item_id=item_id,
             event_type="사용",
+            item_no=item.item_no,
             item_name=item.name,
             measured_weight=item.current_weight,
             usage_amount=amount,
@@ -237,6 +244,7 @@ class InventoryService:
         db.add(InventoryHistory(
             item_id=item_id,
             event_type="사용",
+            item_no=item.item_no,
             item_name=item.name,
             measured_weight=item.current_weight,
             usage_amount=amount,
@@ -265,6 +273,7 @@ class InventoryService:
                 '전체무게(g)': r.start_weight or '',
                 '잔량(g)':     r.current_weight or '',
                 '구매가격(원)': r.price or '',
+                '이미지URL':   r.image_url or '',
                 '메모':        r.memo or '',
                 '등록일':      r.started_at.strftime('%Y-%m-%d') if r.started_at else '',
             })
@@ -335,7 +344,8 @@ class InventoryService:
                 note = f"CSV 일괄 등록 ({item.start_weight:.0f}g)" if item.start_weight else "CSV 일괄 등록"
                 db.add(InventoryHistory(
                     item_id=item.id, event_type="등록",
-                    item_name=item.name, measured_weight=item.start_weight,
+                    item_no=item.item_no, item_name=item.name,
+                    measured_weight=item.start_weight,
                     usage_amount=0.0, note=note,
                 ))
                 new_count += 1
@@ -364,6 +374,7 @@ class InventoryService:
             data.append({
                 '이력ID': r.id,
                 '품목ID': r.item_id or '',
+                '품목번호': r.item_no or (r.item.item_no if r.item else '') or '',
                 '품목명': r.item_name or (r.item.name if r.item else ''),
                 '발생일시': r.action_date.strftime('%Y-%m-%d %H:%M:%S') if r.action_date else '',
                 '이벤트유형': r.event_type,
@@ -463,7 +474,8 @@ class InventoryService:
             '품목ID': 'id', '품목번호': 'item_no',
             '분야': 'domain', '분류': 'category', '품목명': 'name',
             '수량': 'quantity', '전체무게(g)': 'start_weight',
-            '잔량(g)': 'current_weight', '구매가격(원)': 'price', '메모': 'memo',
+            '잔량(g)': 'current_weight', '구매가격(원)': 'price',
+            '이미지URL': 'image_url', '메모': 'memo',
         }
         try:
             df = decode_csv_bytes(content)
@@ -495,6 +507,7 @@ class InventoryService:
                     'start_weight': float(row['start_weight']) if pd.notna(row.get('start_weight')) else None,
                     'current_weight': float(row['current_weight']) if pd.notna(row.get('current_weight')) else None,
                     'price': float(row['price']) if pd.notna(row.get('price')) else None,
+                    'image_url': str(row['image_url']).strip() if pd.notna(row.get('image_url')) and str(row['image_url']).strip() else None,
                     'memo': str(row['memo']).strip() if pd.notna(row.get('memo')) else None,
                 })
 
@@ -522,7 +535,7 @@ class InventoryService:
         from core.utils import decode_csv_bytes
 
         COL_MAP = {
-            '이력ID': 'id', '품목ID': 'item_id', '품목명': 'item_name',
+            '이력ID': 'id', '품목ID': 'item_id', '품목번호': 'item_no', '품목명': 'item_name',
             '발생일시': 'action_date', '이벤트유형': 'event_type',
             '측정무게(g)': 'measured_weight', '사용량(g)': 'usage_amount', '메모': 'note',
         }
@@ -556,9 +569,11 @@ class InventoryService:
                         pass
 
                 row_id = str(row.get('id', '')).strip()
+                item_no_val = str(row.get('item_no', '')).strip() if pd.notna(row.get('item_no')) else None
                 records.append({
                     'id': row_id if row_id and row_id != 'nan' else str(_uuid.uuid4()),
                     'item_id': item_id,
+                    'item_no': item_no_val if item_no_val and item_no_val != 'nan' else None,
                     'event_type': event_type,
                     'item_name': str(row.get('item_name', '')).strip() if pd.notna(row.get('item_name')) else None,
                     'action_date': action_date,

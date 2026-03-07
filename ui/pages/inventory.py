@@ -5,6 +5,7 @@ from domains.inventory.service import InventoryService
 from domains.inventory.schemas import InventoryCreate, InventoryUpdate, HistoryCreate
 from database import db_session
 from core.engine import engine
+from ui.common.table import scrollable_table
 
 EVENT_COLORS = {'등록': 'indigo', '사용': 'green', '수정': 'orange', '삭제': 'red', '완료': 'teal'}
 
@@ -207,6 +208,155 @@ async def render_inventory():
             finish_dialog.open()
 
         # ══════════════════════════════════════════════════════════════
+        # 다이얼로그: 품목 상세
+        # ══════════════════════════════════════════════════════════════
+        with ui.dialog() as detail_dialog:
+            with ui.card().classes('w-[640px] p-0 overflow-hidden'):
+                detail_content = ui.column().classes('w-full')
+
+        def open_detail_dialog(row):
+            detail_content.clear()
+            with detail_content:
+                is_consumable = row.get('is_consumable', False)
+
+                # ── 헤더 ──
+                with ui.row().classes('w-full items-center gap-2 px-4 py-3 border-b bg-slate-50'):
+                    ui.badge(row.get('item_no', '-'), color='indigo')
+                    ui.label(row.get('name', '')).classes('text-base font-bold flex-1 truncate')
+                    ui.button(icon='close', on_click=detail_dialog.close).props('flat dense round size=sm')
+
+                # ── 탭 ──
+                with ui.column().classes('w-full p-4 gap-0'):
+                    with ui.tabs().classes('w-full') as dtabs:
+                        d_info_tab = ui.tab('정보', icon='info')
+                        d_edit_tab = ui.tab('수정', icon='edit')
+                        if is_consumable:
+                            d_use_tab = ui.tab('사용 기록', icon='scale')
+
+                    with ui.tab_panels(dtabs, value=d_info_tab).classes('w-full'):
+
+                        # ── 정보 탭 ──────────────────────────────────
+                        with ui.tab_panel(d_info_tab).classes('p-0 pt-4'):
+                            img_url = row.get('_image_url', '')
+                            if img_url:
+                                ui.image(img_url).classes('w-full max-h-52 object-contain rounded mb-4 bg-slate-50')
+                            else:
+                                with ui.element('div').classes('w-full h-28 bg-slate-100 rounded flex items-center justify-center mb-4'):
+                                    ui.icon('image').classes('text-4xl text-slate-300')
+
+                            def _r(label, value):
+                                with ui.row().classes('w-full justify-between items-center py-1 border-b border-slate-100'):
+                                    ui.label(label).classes('text-sm text-slate-500 w-24 shrink-0')
+                                    ui.label(str(value) if value and value != '-' else '-').classes('text-sm font-medium text-right flex-1')
+
+                            _r('품목번호', row.get('item_no'))
+                            _r('분야', row.get('domain'))
+                            _r('분류', row.get('category'))
+                            _r('수량', row.get('quantity'))
+                            _r('전체무게', row.get('start_weight'))
+                            if is_consumable:
+                                _r('현재잔량', row.get('current_weight'))
+                            _r('구매가', row.get('price'))
+                            _r('잔여가치', row.get('rem_value'))
+                            _r('메모', row.get('memo'))
+
+                            ui.separator().classes('my-4')
+                            with ui.row().classes('gap-2 justify-end'):
+                                if is_consumable:
+                                    cw = float(row['current_weight']) if row.get('current_weight') and row['current_weight'] != '-' else 0.0
+                                    def _do_finish(iid=row['id'], n=row['name'], w=cw):
+                                        detail_dialog.close()
+                                        open_finish_dialog(iid, n, w)
+                                    ui.button('완료 처리', icon='check_circle', on_click=_do_finish) \
+                                        .props('outlined').classes('text-teal-700')
+
+                                def _do_delete(iid=row['id'], n=row['name']):
+                                    detail_dialog.close()
+                                    open_delete_dialog(iid, n)
+                                ui.button('삭제', icon='delete', on_click=_do_delete) \
+                                    .props('outlined').classes('text-red-600')
+
+                        # ── 수정 탭 ──────────────────────────────────
+                        with ui.tab_panel(d_edit_tab).classes('p-0 pt-4'):
+                            d_name   = ui.input(label='품목명').props('outlined dense').classes('w-full')
+                            d_qty    = ui.number(label='수량', min=1, step=1).props('outlined dense').classes('w-full mt-2')
+                            d_weight = ui.number(label='현재 잔량(g)').props('outlined dense').classes('w-full mt-2')
+                            d_price  = ui.number(label='구매 가격(원)').props('outlined dense').classes('w-full mt-2')
+                            d_img    = ui.input(label='이미지 URL').props('outlined dense').classes('w-full mt-2')
+                            d_memo   = ui.textarea(label='메모').props('outlined dense').classes('w-full mt-2')
+                            # 기존 값 주입
+                            d_name.value   = row.get('_name_raw') or ''
+                            d_qty.value    = row.get('_qty_raw')
+                            d_weight.value = row.get('_weight_raw')
+                            d_price.value  = row.get('_price_raw')
+                            d_img.value    = row.get('_image_url') or ''
+                            d_memo.value   = row.get('_memo_raw') or ''
+
+                            item_id = row['id']
+
+                            async def _save():
+                                try:
+                                    with db_session() as db:
+                                        result = await engine.execute(
+                                            'inventory', 'update_item', db,
+                                            item_id=item_id,
+                                            update_data=InventoryUpdate(
+                                                name=d_name.value or None,
+                                                quantity=int(d_qty.value) if d_qty.value else None,
+                                                current_weight=d_weight.value,
+                                                price=d_price.value,
+                                                image_url=d_img.value or None,
+                                                memo=d_memo.value or None,
+                                            )
+                                        )
+                                    if result:
+                                        ui.notify('수정되었습니다!', color='positive')
+                                        detail_dialog.close()
+                                        for cb in refresh_callbacks.values():
+                                            await cb()
+                                except Exception as ex:
+                                    ui.notify(f'수정 실패: {ex}', color='red')
+
+                            ui.button('저장', icon='save', on_click=_save) \
+                                .props('elevated').classes('bg-orange-500 text-white mt-4')
+
+                        # ── 사용 기록 탭 (소모품만) ───────────────────
+                        if is_consumable:
+                            with ui.tab_panel(d_use_tab).classes('p-0 pt-4'):
+                                cw_val = float(row['current_weight']) if row.get('current_weight') and row['current_weight'] != '-' else 0.0
+                                ui.label(f'현재 잔량: {cw_val:.0f}g').classes('text-sm text-blue-600 font-medium mb-3')
+                                d_mw   = ui.number(label='사용 후 측정 무게(g)', value=None).props('outlined dense').classes('w-full')
+                                d_note = ui.input(label='메모', value='사용').props('outlined dense').classes('w-full mt-2')
+
+                                async def _use():
+                                    if d_mw.value is None:
+                                        ui.notify('측정 무게를 입력해주세요.', color='warning')
+                                        return
+                                    try:
+                                        with db_session() as db:
+                                            result = await engine.execute(
+                                                'inventory', 'add_usage_history', db,
+                                                item_id=item_id,
+                                                history_data=HistoryCreate(
+                                                    measured_weight=d_mw.value,
+                                                    note=d_note.value or '사용'
+                                                )
+                                            )
+                                        if result:
+                                            used = cw_val - d_mw.value
+                                            ui.notify(f"기록 완료! ({row.get('name')}: {used:.0f}g 사용)", color='positive')
+                                            detail_dialog.close()
+                                            for cb in refresh_callbacks.values():
+                                                await cb()
+                                    except Exception as ex:
+                                        ui.notify(f'기록 실패: {ex}', color='red')
+
+                                ui.button('기록', icon='check', on_click=_use) \
+                                    .props('elevated').classes('bg-green-600 text-white mt-4')
+
+            detail_dialog.open()
+
+        # ══════════════════════════════════════════════════════════════
         # 다이얼로그: 품목 등록
         # ══════════════════════════════════════════════════════════════
         with ui.dialog() as add_dialog, ui.card().classes('w-96'):
@@ -269,6 +419,7 @@ async def render_inventory():
         with ui.card().classes('w-full shadow-sm'):
             with ui.tabs().classes('w-full') as main_tabs:
                 stock_tab   = ui.tab('재고 현황', icon='inventory')
+                stats_tab   = ui.tab('통계',      icon='bar_chart')
                 history_tab = ui.tab('히스토리',  icon='history')
 
             with ui.tab_panels(main_tabs, value=stock_tab).classes('w-full bg-transparent'):
@@ -360,15 +511,26 @@ async def render_inventory():
                                     'rem_value':      _fmt_won(rv),
                                     'memo':           item.memo or '-',
                                     'is_consumable':  item.category == '소모품',
-                                    '_name_raw':   item.name,
-                                    '_qty_raw':    item.quantity,
-                                    '_weight_raw': item.current_weight,
-                                    '_price_raw':  item.price,
-                                    '_memo_raw':   item.memo or '',
+                                    '_name_raw':    item.name,
+                                    '_qty_raw':     item.quantity,
+                                    '_weight_raw':  item.current_weight,
+                                    '_price_raw':   item.price,
+                                    '_memo_raw':    item.memo or '',
+                                    '_image_url':   item.image_url or '',
                                 })
 
-                            tbl = ui.table(columns=columns, rows=rows, row_key='id') \
-                                .classes('w-full').props('dense flat bordered')
+                            tbl = scrollable_table(columns=columns, rows=rows)
+                            tbl.props('dense flat bordered')
+                            tbl.add_slot('body-cell-item_no', '''
+                                <q-td :props="props">
+                                    <q-chip dense clickable size="sm"
+                                        color="indigo-1" text-color="indigo-9" icon="tag"
+                                        :label="props.value"
+                                        @click="$parent.$emit('detail', props.row)"
+                                        title="클릭: 상세 보기" />
+                                </q-td>
+                            ''')
+                            tbl.on('detail', lambda e: open_detail_dialog(e.args))
                             tbl.add_slot('body-cell-actions', '''
                                 <q-td :props="props">
                                     <q-btn icon="edit" size="sm" dense flat color="orange"
@@ -395,53 +557,47 @@ async def render_inventory():
                                 float(e.args['current_weight']) if e.args['current_weight'] != '-' else 0.0
                             ))
 
-                            # ── 소모품 잔량 + 가치 프로그레스 ─────────
-                            consumables = [i for i in items if i.category == '소모품' and i.current_weight is not None]
-                            if consumables:
-                                ui.separator().classes('my-4')
-                                ui.label('소모품 잔량 현황').classes('text-base font-bold mb-2')
-                                for item in consumables:
-                                    start   = item.start_weight or 0
-                                    current = item.current_weight or 0
-                                    pct     = (current / start * 100) if start > 0 else 0
-                                    color   = 'green' if pct > 50 else ('orange' if pct > 20 else 'red')
-                                    rv      = _remaining_value(item)
-                                    with ui.card().classes('w-full p-3 mb-2 shadow-none border'):
-                                        with ui.row().classes('w-full items-center gap-3'):
-                                            ui.label(item.name).classes('font-medium w-36 shrink-0')
-                                            ui.linear_progress(value=pct / 100, show_value=False) \
-                                                .props(f'color={color}').classes('flex-1')
-                                            ui.label(f'{current:.0f}g / {start:.0f}g ({pct:.0f}%)') \
-                                                .classes('text-sm text-slate-500 w-44 text-right shrink-0')
-                                            if rv is not None:
-                                                ui.label(f'잔여가치 {_fmt_won(rv)}') \
-                                                    .classes('text-sm font-medium text-emerald-600 w-32 text-right shrink-0')
-                                            ui.button(icon='scale',
-                                                on_click=lambda _, iid=item.id, n=item.name, w=item.current_weight:
-                                                    open_usage_dialog(iid, n, w)
-                                            ).props('flat dense round color=green').tooltip('사용 기록')
+                    refresh_callbacks['stock'] = refresh_stock
 
-                            # ── 통계 ──────────────────────────────────
-                            ui.separator().classes('my-4')
-                            ui.label('통계').classes('text-base font-bold mb-2')
+                # ─── 탭 2: 통계 ───────────────────────────────────────
+                with ui.tab_panel(stats_tab):
+                    stats_container = ui.column().classes('w-full')
+
+                    async def refresh_stats():
+                        try:
+                            with db_session() as db:
+                                all_items = await InventoryService.get_items(db)
+                        except Exception as e:
+                            ui.notify(f'조회 실패: {e}', color='red')
+                            return
+
+                        stats_container.clear()
+                        with stats_container:
+                            if not all_items:
+                                ui.label('등록된 품목이 없습니다.').classes('text-slate-400 italic py-8 text-center w-full')
+                                return
+
+                            # ── 요약 카드 ──────────────────────────────
                             domain_cnt, category_cnt = {}, {}
-                            total_price = sum(i.price or 0 for i in items)
-                            total_rem   = sum(_remaining_value(i) or 0 for i in items)
-                            for item in items:
+                            total_price = sum(i.price or 0 for i in all_items)
+                            total_rem   = sum(_remaining_value(i) or 0 for i in all_items)
+                            for item in all_items:
                                 domain_cnt[item.domain]     = domain_cnt.get(item.domain, 0) + 1
                                 category_cnt[item.category] = category_cnt.get(item.category, 0) + 1
 
-                            with ui.row().classes('w-full gap-4 flex-wrap'):
+                            with ui.row().classes('w-full gap-4 flex-wrap mb-4'):
                                 with ui.card().classes('flex-1 p-4 shadow-sm min-w-48'):
                                     ui.label('분야별').classes('text-sm font-bold text-slate-500 mb-2')
                                     for d, cnt in domain_cnt.items():
                                         with ui.row().classes('justify-between'):
-                                            ui.label(d); ui.badge(str(cnt)).props('color=blue')
+                                            ui.label(d)
+                                            ui.badge(str(cnt)).props('color=blue')
                                 with ui.card().classes('flex-1 p-4 shadow-sm min-w-48'):
                                     ui.label('분류별').classes('text-sm font-bold text-slate-500 mb-2')
                                     for c, cnt in category_cnt.items():
                                         with ui.row().classes('justify-between'):
-                                            ui.label(c); ui.badge(str(cnt)).props('color=indigo')
+                                            ui.label(c)
+                                            ui.badge(str(cnt)).props('color=indigo')
                                 with ui.card().classes('flex-1 p-4 shadow-sm min-w-48'):
                                     ui.label('가치 요약').classes('text-sm font-bold text-slate-500 mb-2')
                                     with ui.row().classes('justify-between'):
@@ -451,7 +607,37 @@ async def render_inventory():
                                         ui.label('총 잔여가치')
                                         ui.label(_fmt_won(total_rem)).classes('font-medium text-emerald-600')
 
-                    refresh_callbacks['stock'] = refresh_stock
+                            # ── 소모품 잔량 현황 ───────────────────────
+                            consumables = [i for i in all_items if i.category == '소모품' and i.current_weight is not None]
+                            if consumables:
+                                ui.separator().classes('my-2')
+                                ui.label('소모품 잔량 현황').classes('text-base font-bold mb-2')
+                                with ui.element('div').style('max-height: 700px; overflow-y: auto;').classes('w-full'):
+                                    for item in consumables:
+                                        start   = item.start_weight or 0
+                                        current = item.current_weight or 0
+                                        pct     = (current / start * 100) if start > 0 else 0
+                                        color   = 'green' if pct > 50 else ('orange' if pct > 20 else 'red')
+                                        rv      = _remaining_value(item)
+                                        with ui.card().classes('w-full p-3 mb-2 shadow-none border'):
+                                            with ui.row().classes('w-full items-center gap-3'):
+                                                with ui.column().classes('shrink-0 w-36'):
+                                                    ui.label(item.name).classes('font-medium text-sm')
+                                                    ui.label(item.domain).classes('text-xs text-slate-400')
+                                                ui.linear_progress(value=pct / 100, show_value=False) \
+                                                    .props(f'color={color}').classes('flex-1')
+                                                ui.label(f'{current:.0f}g / {start:.0f}g ({pct:.0f}%)') \
+                                                    .classes('text-sm text-slate-500 w-44 text-right shrink-0')
+                                                if rv is not None:
+                                                    ui.label(f'잔여가치 {_fmt_won(rv)}') \
+                                                        .classes('text-sm font-medium text-emerald-600 w-32 text-right shrink-0')
+                                                ui.button(icon='scale',
+                                                    on_click=lambda _, iid=item.id, n=item.name, w=item.current_weight:
+                                                        open_usage_dialog(iid, n, w)
+                                                ).props('flat dense round color=green').tooltip('사용 기록')
+
+                    refresh_callbacks['stats'] = refresh_stats
+                    ui.timer(0.3, refresh_stats, once=True)
 
                 # ─── 탭 2: 히스토리 ───────────────────────────────────
                 with ui.tab_panel(history_tab):
@@ -593,7 +779,7 @@ async def render_inventory():
 
                             h_rows.append({
                                 'id':           h.id,
-                                'item_no':      (h.item.item_no if h.item else None) or '-',
+                                'item_no':      h.item_no or (h.item.item_no if h.item else None) or '-',
                                 'action_date':  h.action_date.strftime('%Y-%m-%d %H:%M') if h.action_date else '-',
                                 'event_type':   h.event_type,
                                 'item_name':    iname,
@@ -612,8 +798,8 @@ async def render_inventory():
                                 return
 
                             ui.label(f'총 {len(h_rows)}건').classes('text-sm text-slate-500 mb-2')
-                            tbl = ui.table(columns=h_columns, rows=h_rows, row_key='id') \
-                                .classes('w-full').props('dense flat bordered')
+                            tbl = scrollable_table(columns=h_columns, rows=h_rows)
+                            tbl.props('dense flat bordered')
                             tbl.add_slot('body-cell-item_no', '''
                                 <q-td :props="props">
                                     <q-chip dense clickable size="sm" color="blue-grey-2"
