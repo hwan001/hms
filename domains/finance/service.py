@@ -1,9 +1,12 @@
 import asyncio
+import io
+import uuid as _uuid_mod
 from calendar import monthrange
 from datetime import date, timedelta
 from typing import Optional, List
 from uuid import uuid4
 
+import pandas as pd
 from sqlalchemy.orm import Session, joinedload
 
 from domains.finance.models import Portfolio, PortfolioHolding, SimulationSession
@@ -161,6 +164,148 @@ class FinanceService:
         s = db.query(SimulationSession).filter(SimulationSession.id == session_id).first()
         if s:
             db.delete(s)
+
+    # ── CSV Export ──────────────────────────────────────────
+
+    @staticmethod
+    def export_portfolios_to_csv_bytes(db: Session) -> bytes:
+        rows = db.query(Portfolio).order_by(Portfolio.created_at).all()
+        data = [{'포트폴리오ID': p.id, '이름': p.name, '설명': p.description or ''} for p in rows]
+        df = pd.DataFrame(data)
+        buf = io.StringIO()
+        df.to_csv(buf, index=False, encoding='utf-8-sig')
+        return buf.getvalue().encode('utf-8-sig')
+
+    @staticmethod
+    def export_holdings_to_csv_bytes(db: Session) -> bytes:
+        rows = db.query(PortfolioHolding).all()
+        data = [{
+            '보유ID': h.id, '포트폴리오ID': h.portfolio_id,
+            '종목코드': h.ticker, '종목명': h.name,
+            '수량': h.quantity, '평균매입가': h.avg_price,
+            '통화': h.currency, '목표비율': h.target_ratio or 0,
+            '메모': h.memo or '',
+        } for h in rows]
+        df = pd.DataFrame(data)
+        buf = io.StringIO()
+        df.to_csv(buf, index=False, encoding='utf-8-sig')
+        return buf.getvalue().encode('utf-8-sig')
+
+    @staticmethod
+    def export_simulations_to_csv_bytes(db: Session) -> bytes:
+        rows = db.query(SimulationSession).order_by(SimulationSession.created_at).all()
+        data = [{
+            '세션ID': s.id, '포트폴리오ID': s.portfolio_id or '',
+            '이름': s.name, '월매수금액': s.monthly_amount,
+            '매수일': s.buy_day, '시작일': str(s.start_date),
+        } for s in rows]
+        df = pd.DataFrame(data)
+        buf = io.StringIO()
+        df.to_csv(buf, index=False, encoding='utf-8-sig')
+        return buf.getvalue().encode('utf-8-sig')
+
+    # ── CSV Restore ─────────────────────────────────────────
+
+    @staticmethod
+    def restore_portfolios_from_csv_bytes(content: bytes, db: Session) -> dict:
+        """포트폴리오 전체 복원 — 3개 테이블 모두 초기화 후 포트폴리오만 삽입."""
+        from core.utils import decode_csv_bytes
+        from database import engine as sqla_engine
+        try:
+            df = decode_csv_bytes(content)
+            rows = []
+            for _, row in df.iterrows():
+                pid  = str(row.get('포트폴리오ID', '')).strip()
+                name = str(row.get('이름', '')).strip()
+                if not name or name == 'nan':
+                    continue
+                rows.append({
+                    'id':          pid if pid and pid != 'nan' else str(_uuid_mod.uuid4()),
+                    'name':        name,
+                    'description': str(row['설명']).strip() if pd.notna(row.get('설명')) else None,
+                })
+            with sqla_engine.begin() as conn:
+                PortfolioHolding.__table__.drop(conn, checkfirst=True)
+                SimulationSession.__table__.drop(conn, checkfirst=True)
+                Portfolio.__table__.drop(conn, checkfirst=True)
+                Portfolio.__table__.create(conn, checkfirst=True)
+                SimulationSession.__table__.create(conn, checkfirst=True)
+                PortfolioHolding.__table__.create(conn, checkfirst=True)
+                if rows:
+                    conn.execute(Portfolio.__table__.insert(), rows)
+            return {"status": "success", "message": f"포트폴리오 복원 완료! ({len(rows)}건)"}
+        except Exception as e:
+            raise RuntimeError(f"CSV 처리 오류: {str(e)}")
+
+    @staticmethod
+    def restore_holdings_from_csv_bytes(content: bytes, db: Session) -> dict:
+        """보유 종목 복원 — holdings 테이블만 초기화 후 삽입."""
+        from core.utils import decode_csv_bytes
+        from database import engine as sqla_engine
+        try:
+            df = decode_csv_bytes(content)
+            rows = []
+            for _, row in df.iterrows():
+                ticker = str(row.get('종목코드', '')).strip()
+                if not ticker or ticker == 'nan':
+                    continue
+                hid = str(row.get('보유ID', '')).strip()
+                pid = str(row.get('포트폴리오ID', '')).strip()
+                rows.append({
+                    'id':           hid if hid and hid != 'nan' else str(_uuid_mod.uuid4()),
+                    'portfolio_id': pid if pid and pid != 'nan' else None,
+                    'ticker':       ticker,
+                    'name':         str(row.get('종목명', ticker)).strip(),
+                    'quantity':     float(row['수량'])      if pd.notna(row.get('수량'))      else 0.0,
+                    'avg_price':    float(row['평균매입가']) if pd.notna(row.get('평균매입가')) else 0.0,
+                    'currency':     str(row.get('통화', 'KRW')).strip() if pd.notna(row.get('통화')) else 'KRW',
+                    'target_ratio': float(row['목표비율'])  if pd.notna(row.get('목표비율'))  else 0.0,
+                    'memo':         str(row['메모']).strip() if pd.notna(row.get('메모')) else None,
+                })
+            with sqla_engine.begin() as conn:
+                PortfolioHolding.__table__.drop(conn, checkfirst=True)
+                PortfolioHolding.__table__.create(conn, checkfirst=True)
+                if rows:
+                    conn.execute(PortfolioHolding.__table__.insert(), rows)
+            return {"status": "success", "message": f"보유 종목 복원 완료! ({len(rows)}건)"}
+        except Exception as e:
+            raise RuntimeError(f"CSV 처리 오류: {str(e)}")
+
+    @staticmethod
+    def restore_simulations_from_csv_bytes(content: bytes, db: Session) -> dict:
+        """시뮬레이션 세션 복원 — simulations 테이블만 초기화 후 삽입."""
+        from core.utils import decode_csv_bytes
+        from database import engine as sqla_engine
+        try:
+            df = decode_csv_bytes(content)
+            rows = []
+            for _, row in df.iterrows():
+                name = str(row.get('이름', '')).strip()
+                if not name or name == 'nan':
+                    continue
+                sid = str(row.get('세션ID', '')).strip()
+                pid = str(row.get('포트폴리오ID', '')).strip()
+                start_raw = str(row.get('시작일', '')).strip()
+                try:
+                    start_date = date.fromisoformat(start_raw) if start_raw and start_raw != 'nan' else date.today()
+                except ValueError:
+                    start_date = date.today()
+                rows.append({
+                    'id':             sid if sid and sid != 'nan' else str(_uuid_mod.uuid4()),
+                    'portfolio_id':   pid if pid and pid != 'nan' else None,
+                    'name':           name,
+                    'monthly_amount': float(row['월매수금액']) if pd.notna(row.get('월매수금액')) else 500_000.0,
+                    'buy_day':        int(row['매수일'])       if pd.notna(row.get('매수일'))    else 1,
+                    'start_date':     start_date,
+                })
+            with sqla_engine.begin() as conn:
+                SimulationSession.__table__.drop(conn, checkfirst=True)
+                SimulationSession.__table__.create(conn, checkfirst=True)
+                if rows:
+                    conn.execute(SimulationSession.__table__.insert(), rows)
+            return {"status": "success", "message": f"시뮬레이션 세션 복원 완료! ({len(rows)}건)"}
+        except Exception as e:
+            raise RuntimeError(f"CSV 처리 오류: {str(e)}")
 
     # ── DCA Simulation Engine ───────────────────────────────
 

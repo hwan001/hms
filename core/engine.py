@@ -123,16 +123,20 @@ class HMSEngine:
     async def export_all(self, db) -> bytes:
         """
         모든 도메인 CSV를 단일 ZIP으로 묶어 반환.
-        포함 파일: spending.csv, inventory.csv, inventory_history.csv, cooking.csv
+        포함 파일: spending.csv, inventory.csv, inventory_history.csv, cooking.csv,
+                   finance_portfolios.csv, finance_holdings.csv, finance_simulations.csv
         """
         import io
         import zipfile
 
         file_map = [
-            ("spending",  "export_csv",         "spending.csv"),
-            ("inventory", "export_csv",         "inventory.csv"),
-            ("inventory", "export_history_csv", "inventory_history.csv"),
-            ("cooking",   "export_csv",         "cooking.csv"),
+            ("spending",  "export_csv",             "spending.csv"),
+            ("inventory", "export_csv",             "inventory.csv"),
+            ("inventory", "export_history_csv",     "inventory_history.csv"),
+            ("cooking",   "export_csv",             "cooking.csv"),
+            ("finance",   "export_portfolios_csv",  "finance_portfolios.csv"),
+            ("finance",   "export_holdings_csv",    "finance_holdings.csv"),
+            ("finance",   "export_simulations_csv", "finance_simulations.csv"),
         ]
 
         buf = io.BytesIO()
@@ -155,18 +159,24 @@ class HMSEngine:
         import zipfile
         from database import db_session
 
-        # 처리 순서 고정 (inventory → history FK 의존성)
+        # 처리 순서 고정 (inventory → history FK, finance portfolios → holdings/simulations FK)
         ORDER = [
             "spending.csv",
             "inventory.csv",
             "inventory_history.csv",
             "cooking.csv",
+            "finance_portfolios.csv",
+            "finance_holdings.csv",
+            "finance_simulations.csv",
         ]
         domain_action_map = {
-            "spending.csv":          ("spending",  "restore_csv"),
-            "inventory.csv":         ("inventory", "restore_csv"),
-            "inventory_history.csv": ("inventory", "restore_history_csv"),
-            "cooking.csv":           ("cooking",   "restore_csv"),
+            "spending.csv":           ("spending", "restore_csv"),
+            "inventory.csv":          ("inventory", "restore_csv"),
+            "inventory_history.csv":  ("inventory", "restore_history_csv"),
+            "cooking.csv":            ("cooking",  "restore_csv"),
+            "finance_portfolios.csv": ("finance",  "restore_portfolios_csv"),
+            "finance_holdings.csv":   ("finance",  "restore_holdings_csv"),
+            "finance_simulations.csv":("finance",  "restore_simulations_csv"),
         }
 
         results = {}

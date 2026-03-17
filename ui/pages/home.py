@@ -22,10 +22,12 @@ async def render_home():
 
         # ── 바로가기 ──────────────────────────────────────────────────
         ui.label('바로가기').classes('text-xl font-bold')
-        with ui.row().classes('w-full gap-4'):
-            _nav_card('payments',  '가계부',    '/budget',    'green',  '지출 내역 · 통계 · 시뮬레이션')
-            _nav_card('inventory', '재고 관리', '/inventory', 'indigo', '품목 관리 · 소모품 잔량 추적')
-            _nav_card('restaurant','요리',      '/cooking',   'orange', '레시피 등록 및 관리')
+        with ui.element('div').style('overflow-x: auto; padding-bottom: 4px;').classes('w-full'):
+            with ui.row().classes('gap-4 flex-nowrap'):
+                _nav_card('payments',       '가계부',    '/budget',    'green',  '지출 내역 · 통계 · 시뮬레이션')
+                _nav_card('inventory',      '재고 관리', '/inventory', 'indigo', '품목 관리 · 소모품 잔량 추적')
+                _nav_card('restaurant',     '요리',      '/cooking',   'orange', '레시피 등록 및 관리')
+                _nav_card('account_balance','금융',      '/finance',   'blue',   '금융 계좌 · 자산 관리')
 
         # ── 현황 요약 ─────────────────────────────────────────────────
         ui.label('현황 요약').classes('text-xl font-bold')
@@ -53,10 +55,11 @@ def _nav_card(icon: str, label: str, path: str, color: str, desc: str):
         'green':  ('bg-green-50',  'border-green-200',  'text-green-700'),
         'indigo': ('bg-indigo-50', 'border-indigo-200', 'text-indigo-700'),
         'orange': ('bg-orange-50', 'border-orange-200', 'text-orange-700'),
+        'blue':   ('bg-blue-50',   'border-blue-200',   'text-blue-700'),
     }
     bg, border, icon_color = bg_map[color]
 
-    with ui.card().classes(f'flex-1 min-w-40 p-5 border {bg} {border} cursor-pointer hover:shadow-lg transition-shadow') \
+    with ui.card().classes(f'shrink-0 w-52 p-5 border {bg} {border} cursor-pointer hover:shadow-lg transition-shadow') \
             .on('click', lambda _p=path: ui.navigate.to(_p)):
         with ui.row().classes('items-center gap-3 mb-2'):
             ui.icon(icon).classes(f'text-3xl {icon_color}')
@@ -77,7 +80,7 @@ async def _spending_summary():
             balance = int(stats.get('current_balance', 0))
             latest  = stats.get('latest_date', '-')
             monthly = stats.get('monthly_trend', [])
-            this_month_out = int(monthly[-1]['total_outcome']) if monthly else 0
+            this_month_out = int(monthly[-1]['amount']) if monthly else 0
 
             _stat_row('이번 달 지출', f'₩{this_month_out:,}', 'text-red-500')
             _stat_row('현재 잔액',   f'₩{balance:,}',         'text-blue-600')
@@ -186,28 +189,43 @@ async def _data_management_panel():
                 'label':   '가계부',
                 'icon':    'payments',
                 'color':   'green',
-                'exports': [('spending', 'export_csv', '')], # ''은 버튼에 표시할 파일명
-                'imports': [('spending', 'restore_csv', '', '.csv')],
+                'exports': [('spending', 'export_csv', 'spending.csv')],
+                'imports': [('spending', 'restore_csv', 'spending.csv', '.csv')],
             },
             {
                 'label':   '재고 관리',
                 'icon':    'inventory',
                 'color':   'indigo',
                 'exports': [
-                    ('inventory', 'export_csv', ''),
-                    ('inventory', 'export_history_csv',  '(history.csv)'),
+                    ('inventory', 'export_csv',         'inventory.csv'),
+                    ('inventory', 'export_history_csv', 'inventory_history.csv'),
                 ],
                 'imports': [
-                    ('inventory', 'restore_csv', '', '.csv'),
-                    ('inventory', 'restore_history_csv', '(history.csv)', '.csv'),
+                    ('inventory', 'restore_csv',         'inventory.csv',         '.csv'),
+                    ('inventory', 'restore_history_csv', 'inventory_history.csv', '.csv'),
                 ],
             },
             {
                 'label':   '요리',
                 'icon':    'restaurant',
                 'color':   'orange',
-                'exports': [('cooking',  'export_csv', '')],
-                'imports': [('cooking',  'restore_csv', '', '.csv')],
+                'exports': [('cooking', 'export_csv', 'cooking.csv')],
+                'imports': [('cooking', 'restore_csv', 'cooking.csv', '.csv')],
+            },
+            {
+                'label':   '금융',
+                'icon':    'account_balance',
+                'color':   'blue',
+                'exports': [
+                    ('finance', 'export_portfolios_csv',  'portfolios.csv'),
+                    ('finance', 'export_holdings_csv',    'holdings.csv'),
+                    ('finance', 'export_simulations_csv', 'simulations.csv'),
+                ],
+                'imports': [
+                    ('finance', 'restore_portfolios_csv',  'portfolios.csv',  '.csv'),
+                    ('finance', 'restore_holdings_csv',    'holdings.csv',    '.csv'),
+                    ('finance', 'restore_simulations_csv', 'simulations.csv', '.csv'),
+                ],
             },
         ]
 
@@ -215,6 +233,7 @@ async def _data_management_panel():
             'green':  'bg-green-600',
             'indigo': 'bg-indigo-600',
             'orange': 'bg-orange-500',
+            'blue':   'bg-blue-600',
         }
 
         for cfg in domain_configs:
@@ -265,7 +284,7 @@ async def _data_management_panel():
 async def _danger_zone_panel():
     """모든 데이터 초기화 패널"""
     with ui.card().classes('w-full p-5 shadow-sm border border-red-200 bg-red-50'):
-        ui.label('모든 도메인(가계부·재고·요리)의 데이터를 완전히 삭제합니다. 이 작업은 되돌릴 수 없습니다.') \
+        ui.label('모든 도메인(가계부·재고·요리·금융)의 데이터를 완전히 삭제합니다. 이 작업은 되돌릴 수 없습니다.') \
             .classes('text-xs text-red-400 mb-4')
 
         async def _do_clear():
@@ -278,7 +297,7 @@ async def _danger_zone_panel():
         async def _confirm_clear():
             with ui.dialog() as dlg, ui.card().classes('p-6 gap-4'):
                 ui.label('정말로 모든 데이터를 삭제하시겠습니까?').classes('font-bold text-red-700')
-                ui.label('가계부, 재고, 요리 데이터가 모두 사라집니다.').classes('text-sm text-slate-500')
+                ui.label('가계부, 재고, 요리, 금융 데이터가 모두 사라집니다.').classes('text-sm text-slate-500')
                 with ui.row().classes('gap-3 mt-2'):
                     ui.button('취소', on_click=dlg.close).props('outlined')
                     async def _confirmed():

@@ -42,6 +42,24 @@ class FinanceHandler:
             case "delete_simulation":
                 return await FinanceService.delete_simulation(db, kwargs["session_id"])
 
+            case "export_portfolios_csv":
+                return FinanceService.export_portfolios_to_csv_bytes(db)
+
+            case "export_holdings_csv":
+                return FinanceService.export_holdings_to_csv_bytes(db)
+
+            case "export_simulations_csv":
+                return FinanceService.export_simulations_to_csv_bytes(db)
+
+            case "restore_portfolios_csv":
+                return FinanceService.restore_portfolios_from_csv_bytes(kwargs["content"], db)
+
+            case "restore_holdings_csv":
+                return FinanceService.restore_holdings_from_csv_bytes(kwargs["content"], db)
+
+            case "restore_simulations_csv":
+                return FinanceService.restore_simulations_from_csv_bytes(kwargs["content"], db)
+
             case _:
                 raise ValueError(
                     f"[FinanceHandler] Unknown action: '{action}'"
